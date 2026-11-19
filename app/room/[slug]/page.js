@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -72,7 +72,7 @@ function getDomainLabel(url) {
     }
 }
 
-export default function RoomPage() {
+function RoomContent() {
     const params = useParams();
     const slug = params?.slug;
 
@@ -1151,5 +1151,19 @@ export default function RoomPage() {
                 </div>
             )}
         </div>
+    );
+}
+
+export default function RoomPage() {
+    return (
+        <Suspense
+            fallback={
+                <div className="min-h-screen bg-[#FAF9F6] flex items-center justify-center text-[#1B4332]">
+                    <Loader2 className="w-8 h-8 animate-spin" />
+                </div>
+            }
+        >
+            <RoomContent />
+        </Suspense>
     );
 }
