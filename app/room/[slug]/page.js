@@ -43,6 +43,7 @@ import {
     updateDislikes,
     lockParticipantSession,
     organizerResetPin,
+    addParticipantToRoom,
 } from '@/app/actions';
 
 const AVATAR_PALETTES = [
@@ -92,9 +93,24 @@ function RoomContent() {
     const [dashboard, setDashboard] = useState(null);
     const [isCardRevealed, setIsCardRevealed] = useState(false);
 
-    // Organizer token (read from localStorage)
-    const [adminToken, setAdminToken] = useState('');
+    // Organizer token (read from localStorage or query param)
+    const [adminToken, setAdminToken] = useState(() => {
+        if (typeof window !== 'undefined' && slug) {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('admin') || localStorage.getItem(`ss_admin_${slug}`) || '';
+        }
+        return '';
+    });
     const [showOrganizerDrawer, setShowOrganizerDrawer] = useState(false);
+
+    // Add Person Modal & quick add state
+    const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+    const [addNameInput, setAddNameInput] = useState('');
+    const [addExclusionInput, setAddExclusionInput] = useState('');
+    const [addError, setAddError] = useState('');
+    const [isAdding, setIsAdding] = useState(false);
+    const [quickAddName, setQuickAddName] = useState('');
+    const [isQuickAdding, setIsQuickAdding] = useState(false);
 
     // PIN Modal state
     const [modalTarget, setModalTarget] = useState(null);
@@ -160,10 +176,17 @@ function RoomContent() {
     }, [slug]);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         loadRoomData();
         if (typeof window !== 'undefined' && slug) {
-            const storedToken = localStorage.getItem(`ss_admin_${slug}`);
-            if (storedToken) setAdminToken(storedToken);
+            const urlParams = new URLSearchParams(window.location.search);
+            const queryAdmin = urlParams.get('admin');
+            if (queryAdmin) {
+                localStorage.setItem(`ss_admin_${slug}`, queryAdmin);
+                // Strip the admin parameter from the visible URL bar for safety
+                const cleanUrl = window.location.pathname;
+                window.history.replaceState({}, '', cleanUrl);
+            }
         }
     }, [slug, loadRoomData]);
 
@@ -180,11 +203,73 @@ function RoomContent() {
 
     const handleCopyInviteLink = () => {
         if (typeof window !== 'undefined') {
-            navigator.clipboard?.writeText(window.location.href).catch(() => { });
+            const url = new URL(window.location.href);
+            url.searchParams.delete('admin');
+            navigator.clipboard?.writeText(url.toString()).catch(() => { });
         }
         setCopiedLink(true);
         showToast('Group invite link copied!');
         setTimeout(() => setCopiedLink(false), 2500);
+    };
+
+    const handleCopyOrganizerLink = () => {
+        if (typeof window !== 'undefined' && adminToken) {
+            const organizerUrl = `${window.location.origin}/room/${slug}?admin=${adminToken}`;
+            navigator.clipboard?.writeText(organizerUrl).catch(() => { });
+            showToast('Organizer link copied (keep private!)');
+        }
+    };
+
+    const handleAddParticipant = async (e) => {
+        if (e) e.preventDefault();
+        const trimmed = addNameInput.trim();
+        if (!trimmed || isAdding) return;
+
+        setIsAdding(true);
+        setAddError('');
+
+        const res = await addParticipantToRoom({
+            slug,
+            name: trimmed,
+            exclusionParticipantId: addExclusionInput || null,
+            adminToken: adminToken || null,
+        });
+
+        setIsAdding(false);
+
+        if (res.error) {
+            setAddError(res.error);
+            return;
+        }
+
+        showToast(res.notice || `Added ${trimmed} to the room!`);
+        setIsAddModalOpen(false);
+        setAddNameInput('');
+        setAddExclusionInput('');
+        await loadRoomData();
+    };
+
+    const handleQuickAdd = async (e) => {
+        e.preventDefault();
+        const trimmed = quickAddName.trim();
+        if (!trimmed || isQuickAdding) return;
+
+        setIsQuickAdding(true);
+        const res = await addParticipantToRoom({
+            slug,
+            name: trimmed,
+            adminToken: adminToken || null,
+        });
+        setIsQuickAdding(false);
+
+        if (res.error) {
+            showToast(res.error);
+            return;
+        }
+
+        showToast(res.notice || `Added ${trimmed} to the room!`);
+        setQuickAddName('');
+        await loadRoomData();
     };
 
     // ==========================================================================
@@ -416,7 +501,7 @@ function RoomContent() {
                                 <div>
                                     <div className="flex flex-wrap items-center gap-2 mb-2">
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-xs font-semibold">
-                                            <Check className="w-3.5 h-3.5" /> Names Drawn
+                                            <Check className="w-3.5 h-3.5" /> {participants.length >= 2 ? 'Names Drawn' : 'Setup Mode'}
                                         </span>
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] text-[#57534E] text-xs font-medium">
                                             <DollarSign className="w-3.5 h-3.5 text-[#D4A373]" />
@@ -468,7 +553,7 @@ function RoomContent() {
                                         <div
                                             className="h-full bg-[#1B4332] transition-all duration-500"
                                             style={{
-                                                width: `${(claimedCount / participants.length) * 100}%`,
+                                                width: `${participants.length > 0 ? (claimedCount / participants.length) * 100 : 0}%`,
                                             }}
                                         />
                                     </div>
@@ -492,41 +577,103 @@ function RoomContent() {
                             </div>
 
                             {adminToken && showOrganizerDrawer && (
-                                <div className="mt-4 p-4 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] space-y-2.5">
-                                    <span className="text-xs font-bold uppercase tracking-wider text-[#57534E]">
-                                        Reset Participant PINs (Without Reshuffling)
-                                    </span>
-                                    <div className="divide-y divide-[#E7E5E0]">
-                                        {participants.map((p) => (
-                                            <div
-                                                key={p.id}
-                                                className="py-2 flex items-center justify-between text-sm"
+                                <div className="mt-4 p-5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] space-y-4">
+                                    {/* Quick Add Person */}
+                                    <div>
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-xs font-bold uppercase tracking-wider text-[#57534E]">
+                                                Add Person to Room
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setIsAddModalOpen(true);
+                                                    setAddNameInput('');
+                                                    setAddExclusionInput('');
+                                                    setAddError('');
+                                                }}
+                                                className="text-xs text-[#8C6D46] hover:underline flex items-center gap-1 cursor-pointer"
                                             >
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-medium text-[#1C1917]">
-                                                        {p.name}
-                                                    </span>
-                                                    {p.isClaimed ? (
-                                                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#1B4332]/10 text-[#1B4332] font-medium">
-                                                            PIN Set {p.pinHint ? `(${p.pinHint})` : ''}
+                                                <span>Custom exclusions</span>
+                                                <ChevronDown className="w-3 h-3 -rotate-90" />
+                                            </button>
+                                        </div>
+                                        <form onSubmit={handleQuickAdd} className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                value={quickAddName}
+                                                onChange={(e) => setQuickAddName(e.target.value)}
+                                                placeholder="New participant's name (e.g. Maya)"
+                                                className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
+                                            />
+                                            <button
+                                                type="submit"
+                                                disabled={!quickAddName.trim() || isQuickAdding}
+                                                className="px-4 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shrink-0"
+                                            >
+                                                {isQuickAdding ? (
+                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                ) : (
+                                                    <Plus className="w-3.5 h-3.5" />
+                                                )}
+                                                <span>Add</span>
+                                            </button>
+                                        </form>
+                                    </div>
+
+                                    {/* PIN Resets */}
+                                    <div className="pt-3 border-t border-[#E7E5E0]">
+                                        <span className="text-xs font-bold uppercase tracking-wider text-[#57534E] block mb-2">
+                                            Reset Participant PINs (Without Reshuffling)
+                                        </span>
+                                        <div className="divide-y divide-[#E7E5E0] max-h-48 overflow-y-auto pr-1">
+                                            {participants.map((p) => (
+                                                <div
+                                                    key={p.id}
+                                                    className="py-2 flex items-center justify-between text-sm"
+                                                >
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="font-medium text-[#1C1917]">
+                                                            {p.name}
                                                         </span>
-                                                    ) : (
-                                                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#E7E5E0]/70 text-[#78716C]">
-                                                            Unclaimed
-                                                        </span>
+                                                        {p.isClaimed ? (
+                                                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#1B4332]/10 text-[#1B4332] font-medium">
+                                                                PIN Set {p.pinHint ? `(${p.pinHint})` : ''}
+                                                                {p.hasRevealed ? ' • Opened' : ''}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#E7E5E0]/70 text-[#78716C]">
+                                                                Unclaimed
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {p.isClaimed && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleResetPin(p.id, p.name)}
+                                                            className="text-xs font-semibold text-[#C84B31] hover:underline cursor-pointer"
+                                                        >
+                                                            Reset PIN
+                                                        </button>
                                                     )}
                                                 </div>
-                                                {p.isClaimed && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleResetPin(p.id, p.name)}
-                                                        className="text-xs font-semibold text-[#C84B31] hover:underline cursor-pointer"
-                                                    >
-                                                        Reset PIN
-                                                    </button>
-                                                )}
-                                            </div>
-                                        ))}
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Secret Organizer Link */}
+                                    <div className="pt-3 border-t border-[#E7E5E0] flex items-center justify-between">
+                                        <span className="text-xs text-[#78716C]">
+                                            Save organizer link for this room:
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyOrganizerLink}
+                                            className="text-xs font-semibold text-[#8C6D46] hover:underline flex items-center gap-1 cursor-pointer"
+                                        >
+                                            <Copy className="w-3 h-3" />
+                                            <span>Copy Organizer Link</span>
+                                        </button>
                                     </div>
                                 </div>
                             )}
@@ -535,22 +682,53 @@ function RoomContent() {
                         {/* Participant Cards */}
                         <div>
                             <div className="flex items-center justify-between mb-3 px-1">
-                                <h3 className="text-sm font-bold uppercase tracking-wider text-[#57534E]">
-                                    Who are you?
-                                </h3>
-                                {activeParticipantId && dashboard && (
+                                <div className="flex items-center gap-2">
+                                    <h3 className="text-sm font-bold uppercase tracking-wider text-[#57534E]">
+                                        Who are you?
+                                    </h3>
+                                    <span className="text-xs text-[#78716C] font-normal">
+                                        ({participants.length} total)
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
                                     <button
                                         type="button"
-                                        onClick={() => setView('dashboard')}
-                                        className="text-xs font-semibold text-[#1B4332] hover:underline flex items-center gap-1 cursor-pointer"
+                                        onClick={() => {
+                                            setIsAddModalOpen(true);
+                                            setAddNameInput('');
+                                            setAddExclusionInput('');
+                                            setAddError('');
+                                        }}
+                                        className="text-xs font-semibold text-[#1B4332] hover:text-[#143326] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1B4332]/10 hover:bg-[#1B4332]/15 transition cursor-pointer"
                                     >
-                                        <span>Return to my match</span>
-                                        <ArrowLeft className="w-3.5 h-3.5 rotate-180" />
+                                        <Plus className="w-3.5 h-3.5" />
+                                        <span>Add Person</span>
                                     </button>
-                                )}
+                                    {activeParticipantId && dashboard && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setView('dashboard')}
+                                            className="text-xs font-semibold text-[#1B4332] hover:underline flex items-center gap-1 cursor-pointer"
+                                        >
+                                            <span>Return to my match</span>
+                                            <ArrowLeft className="w-3.5 h-3.5 rotate-180" />
+                                        </button>
+                                    )}
+                                </div>
                             </div>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {participants.length === 0 && (
+                                    <div className="col-span-1 sm:col-span-2 p-6 rounded-2xl bg-white border border-[#E7E5E0] text-center space-y-2">
+                                        <div className="w-10 h-10 rounded-2xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center mx-auto">
+                                            <Gift className="w-5 h-5" />
+                                        </div>
+                                        <h4 className="font-bold text-base text-[#1C1917]">No participants yet</h4>
+                                        <p className="text-xs text-[#57534E] max-w-sm mx-auto">
+                                            Add friends and family using the button below. Once people join, everyone can claim their spot!
+                                        </p>
+                                    </div>
+                                )}
                                 {participants.map((person, idx) => {
                                     const isCurrentSession = activeParticipantId === person.id;
 
@@ -619,6 +797,35 @@ function RoomContent() {
                                         </button>
                                     );
                                 })}
+
+                                {/* Add Person Card */}
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsAddModalOpen(true);
+                                        setAddNameInput('');
+                                        setAddExclusionInput('');
+                                        setAddError('');
+                                    }}
+                                    className="p-4 rounded-2xl border-2 border-dashed border-[#E7E5E0] hover:border-[#1B4332] bg-[#FAF9F6]/50 hover:bg-white text-left transition flex items-center justify-between group cursor-pointer"
+                                >
+                                    <div className="flex items-center gap-3.5">
+                                        <div className="w-11 h-11 rounded-2xl bg-[#E7E5E0]/60 group-hover:bg-[#1B4332]/10 text-[#78716C] group-hover:text-[#1B4332] flex items-center justify-center font-bold text-sm transition">
+                                            <Plus className="w-5 h-5" />
+                                        </div>
+                                        <div>
+                                            <div className="font-bold text-base text-[#1C1917] group-hover:text-[#1B4332] transition">
+                                                Add someone else
+                                            </div>
+                                            <div className="text-xs text-[#78716C] mt-0.5">
+                                                Someone missed? Add them to the exchange
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="w-8 h-8 rounded-full bg-[#FAF9F6] group-hover:bg-[#1B4332]/10 text-[#78716C] group-hover:text-[#1B4332] flex items-center justify-center transition">
+                                        <Plus className="w-4 h-4" />
+                                    </div>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -1147,6 +1354,132 @@ function RoomContent() {
                                         : 'Set PIN & See My Match'}
                             </span>
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* ====================================================================
+          ADD PERSON MODAL
+      ==================================================================== */}
+            {isAddModalOpen && (
+                <div
+                    className="fixed inset-0 z-40 bg-[#1C1917]/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
+                    onClick={() => !isAdding && setIsAddModalOpen(false)}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 border border-[#E7E5E0] shadow-2xl"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-2xl bg-[#1B4332] text-[#FAF9F6] flex items-center justify-center font-bold text-sm">
+                                    <Gift className="w-5 h-5 text-[#D4A373]" />
+                                </div>
+                                <div>
+                                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#8C6D46]">
+                                        Gift Exchange
+                                    </span>
+                                    <h3 className="text-xl font-bold text-[#1C1917]">
+                                        Add a Person
+                                    </h3>
+                                </div>
+                            </div>
+
+                            <button
+                                type="button"
+                                disabled={isAdding}
+                                onClick={() => setIsAddModalOpen(false)}
+                                className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        <p className="text-sm text-[#57534E] mb-5">
+                            Add someone who was missed. They will be seamlessly integrated into the Secret Santa circle.
+                        </p>
+
+                        <form
+                            onSubmit={handleAddParticipant}
+                            className="space-y-4"
+                        >
+                            <div>
+                                <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
+                                    Person&apos;s Name
+                                </label>
+                                <input
+                                    type="text"
+                                    value={addNameInput}
+                                    onChange={(e) => {
+                                        setAddNameInput(e.target.value);
+                                        if (addError) setAddError('');
+                                    }}
+                                    autoFocus
+                                    placeholder="e.g., Grandma, Taylor, Alex M."
+                                    className="w-full px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5 flex items-center justify-between">
+                                    <span>Prevent Drawing (Optional)</span>
+                                    <span className="text-[11px] font-normal text-[#78716C]">e.g. spouse / partner</span>
+                                </label>
+                                <select
+                                    value={addExclusionInput}
+                                    onChange={(e) => setAddExclusionInput(e.target.value)}
+                                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
+                                >
+                                    <option value="">No exclusion (can draw anyone)</option>
+                                    {participants.map((p) => (
+                                        <option key={p.id} value={p.id}>
+                                            Cannot draw {p.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] text-xs text-[#57534E] flex items-start gap-2.5">
+                                <Sparkles className="w-4 h-4 text-[#D4A373] shrink-0 mt-0.5" />
+                                <span>
+                                    Secret Santa matches update safely. Anyone who already opened their envelope keeps their recipient!
+                                </span>
+                            </div>
+
+                            {addError && (
+                                <p className="text-center text-xs font-semibold text-[#C84B31]">
+                                    {addError}
+                                </p>
+                            )}
+
+                            <div className="flex gap-2.5 pt-2">
+                                <button
+                                    type="button"
+                                    disabled={isAdding}
+                                    onClick={() => setIsAddModalOpen(false)}
+                                    className="flex-1 py-3 px-4 rounded-xl font-semibold text-sm bg-[#FAF9F6] hover:bg-[#F2EFE9] text-[#57534E] border border-[#E7E5E0] transition cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={!addNameInput.trim() || isAdding}
+                                    className="flex-1 py-3 px-4 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
+                                >
+                                    {isAdding ? (
+                                        <>
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                            <span>Adding...</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Plus className="w-4 h-4" />
+                                            <span>Add to Room</span>
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             )}

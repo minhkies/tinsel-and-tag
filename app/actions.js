@@ -162,17 +162,16 @@ function generateSecretSantaMatches(participants) {
  * Creates a new Secret Santa room, inserts participants with UUIDs,
  * computes a valid draw respecting exclusion rules, and returns { slug, adminToken }.
  */
-export async function createRoom({ name, budget, exchangeDate, participants }) {
+export async function createRoom({ name, budget, exchangeDate, participants = [] }) {
   try {
     if (!name?.trim()) {
       return { error: 'Please enter a group or event name.' };
     }
-    if (!Array.isArray(participants) || participants.length < 3) {
-      return { error: 'Please add at least 3 participants.' };
-    }
+
+    const safeParticipants = Array.isArray(participants) ? participants : [];
 
     // Generate real UUIDs upfront so we can map exclusion rules & assignments cleanly
-    const prepared = participants.map((p) => ({
+    const prepared = safeParticipants.map((p) => ({
       tempId: p.id,
       id: crypto.randomUUID(),
       name: p.name.trim(),
@@ -189,11 +188,27 @@ export async function createRoom({ name, budget, exchangeDate, participants }) {
         .filter(Boolean),
     }));
 
-    const assignments = generateSecretSantaMatches(nodes);
-    if (!assignments) {
-      return {
-        error:
-          'No valid draw exists with these exclusion rules. Remove an exclusion or add another person.',
+    let assignments = {};
+    if (nodes.length >= 3) {
+      assignments = generateSecretSantaMatches(nodes);
+      if (!assignments) {
+        return {
+          error:
+            'No valid draw exists with these exclusion rules. Remove an exclusion or adjust participants.',
+        };
+      }
+    } else if (nodes.length === 2) {
+      const [p1, p2] = nodes;
+      if (p1.exclusions.includes(p2.id) || p2.exclusions.includes(p1.id)) {
+        return { error: 'The 2 participants have an exclusion rule blocking each other.' };
+      }
+      assignments = {
+        [p1.id]: p2.id,
+        [p2.id]: p1.id,
+      };
+    } else if (nodes.length === 1) {
+      assignments = {
+        [nodes[0].id]: null,
       };
     }
 
@@ -215,20 +230,24 @@ export async function createRoom({ name, budget, exchangeDate, participants }) {
 
     if (roomError) throw roomError;
 
-    // 2. Insert Participants (with assignee_id populated)
-    const rowsToInsert = nodes.map((node) => ({
-      id: node.id,
-      room_id: room.id,
-      name: node.name,
-      exclusions: node.exclusions,
-      assignee_id: assignments[node.id],
-    }));
+    // 2. Insert Participants (if any provided)
+    if (nodes.length > 0) {
+      const rowsToInsert = nodes.map((node) => ({
+        id: node.id,
+        room_id: room.id,
+        name: node.name,
+        exclusions: node.exclusions,
+        assignee_id: assignments[node.id] || null,
+        dislikes: '',
+        has_revealed: false,
+      }));
 
-    const { error: partError } = await supabaseAdmin
-      .from('participants')
-      .insert(rowsToInsert);
+      const { error: partError } = await supabaseAdmin
+        .from('participants')
+        .insert(rowsToInsert);
 
-    if (partError) throw partError;
+      if (partError) throw partError;
+    }
 
     return { slug: room.slug, adminToken };
   } catch (err) {
@@ -255,7 +274,7 @@ export async function getRoomLobby(slug) {
 
     const { data: participants, error: partError } = await supabaseAdmin
       .from('participants')
-      .select('id, name, pin_hash, pin_hint')
+      .select('id, name, pin_hash, pin_hint, has_revealed')
       .eq('room_id', room.id)
       .order('name', { ascending: true });
 
@@ -276,6 +295,7 @@ export async function getRoomLobby(slug) {
         name: p.name,
         isClaimed: Boolean(p.pin_hash),
         pinHint: p.pin_hint || '',
+        hasRevealed: Boolean(p.has_revealed),
       })),
       activeParticipantId,
     };
@@ -529,4 +549,285 @@ export async function organizerResetPin({ slug, adminToken, participantId }) {
 
   if (error) return { error: 'Failed to reset PIN.' };
   return { success: true };
+}
+
+/**
+ * Adds a new participant to an existing room and integrates them into
+ * the Secret Santa match assignments.
+ *
+ * Algorithm & Integrity:
+ * - Prefers splicing into an unrevealed edge (U -> V) so that NO participant
+ *   who has already opened their envelope has their recipient changed.
+ * - If all unrevealed edges are blocked or all participants have revealed,
+ *   safely splices an edge and resets the single affected giver's envelope.
+ * - As a last resort, executes backtracking matcher to rebalance assignments.
+ * - Atomically updates assignments and mutual exclusion rules.
+ */
+export async function addParticipantToRoom({
+  slug,
+  name,
+  exclusionParticipantId = null,
+  adminToken = null,
+}) {
+  try {
+    const trimmedName = (name || '').trim();
+    if (!trimmedName) {
+      return { error: 'Please enter a name for the participant.' };
+    }
+
+    // 1. Fetch room
+    const { data: room, error: roomError } = await supabaseAdmin
+      .from('rooms')
+      .select('id, slug, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (roomError || !room) {
+      return { error: 'Room not found.' };
+    }
+
+    // 2. Fetch existing participants
+    const { data: participants, error: partError } = await supabaseAdmin
+      .from('participants')
+      .select('id, name, exclusions, assignee_id, has_revealed, pin_hash')
+      .eq('room_id', room.id);
+
+    if (partError) throw partError;
+
+    // Check for duplicate name (case-insensitive)
+    if (
+      participants.some(
+        (p) => p.name.trim().toLowerCase() === trimmedName.toLowerCase()
+      )
+    ) {
+      return { error: `"${trimmedName}" is already in this room.` };
+    }
+
+    const newParticipantId = crypto.randomUUID();
+    const newExclusions = exclusionParticipantId ? [exclusionParticipantId] : [];
+
+    // Helper to evaluate if a directed edge U -> V can accept the new participant
+    const canInsertIntoEdge = (giver, recipient) => {
+      if (!giver || !recipient) return false;
+      if (giver.id === newParticipantId || recipient.id === newParticipantId) return false;
+      if ((giver.exclusions || []).includes(newParticipantId)) return false;
+      if (newExclusions.includes(giver.id)) return false;
+      if (newExclusions.includes(recipient.id)) return false;
+      if ((recipient.exclusions || []).includes(newParticipantId)) return false;
+      return true;
+    };
+
+    let chosenEdge = null;
+    let isResettingGiverReveal = false;
+    let notice = '';
+
+    if (participants.length === 0) {
+      // First person in empty room
+      const { data: inserted, error: insertError } = await supabaseAdmin
+        .from('participants')
+        .insert({
+          id: newParticipantId,
+          room_id: room.id,
+          name: trimmedName,
+          exclusions: newExclusions,
+          assignee_id: null,
+          dislikes: '',
+          has_revealed: false,
+        })
+        .select('id, name')
+        .single();
+
+      if (insertError) throw insertError;
+      return { success: true, participant: inserted, notice: `Added ${trimmedName} to the room.` };
+    }
+
+    if (participants.length === 1) {
+      // Second person: create mutual 2-person pair
+      const p1 = participants[0];
+      const { data: inserted, error: insertError } = await supabaseAdmin
+        .from('participants')
+        .insert({
+          id: newParticipantId,
+          room_id: room.id,
+          name: trimmedName,
+          exclusions: newExclusions,
+          assignee_id: p1.id,
+          dislikes: '',
+          has_revealed: false,
+        })
+        .select('id, name')
+        .single();
+
+      if (insertError) throw insertError;
+
+      await supabaseAdmin
+        .from('participants')
+        .update({ assignee_id: newParticipantId })
+        .eq('id', p1.id);
+
+      return { success: true, participant: inserted, notice: `Added ${trimmedName} to the gift exchange!` };
+    }
+
+    // Build directed edges from current assignments
+    const edges = participants
+      .map((p) => ({
+        giver: p,
+        recipient: participants.find((r) => r.id === p.assignee_id),
+      }))
+      .filter((e) => e.recipient);
+
+    // Strategy A: Preferred - unrevealed edges (safest, preserves all opened envelopes)
+    const validUnrevealedEdges = edges.filter(
+      ({ giver, recipient }) => !giver.has_revealed && canInsertIntoEdge(giver, recipient)
+    );
+
+    if (validUnrevealedEdges.length > 0) {
+      // Pick random valid unrevealed edge
+      const randomIndex = Math.floor(Math.random() * validUnrevealedEdges.length);
+      chosenEdge = validUnrevealedEdges[randomIndex];
+    } else {
+      // Strategy B: All unrevealed edges are blocked or all participants revealed
+      const validAnyEdges = edges.filter(({ giver, recipient }) =>
+        canInsertIntoEdge(giver, recipient)
+      );
+
+      if (validAnyEdges.length > 0) {
+        const randomIndex = Math.floor(Math.random() * validAnyEdges.length);
+        chosenEdge = validAnyEdges[randomIndex];
+        isResettingGiverReveal = Boolean(chosenEdge.giver.has_revealed);
+        if (isResettingGiverReveal) {
+          notice = `${chosenEdge.giver.name}'s envelope was reset so they can reveal their new match.`;
+        }
+      }
+    }
+
+    if (chosenEdge) {
+      // 1. Insert new participant (gives to chosenEdge.recipient)
+      const { data: inserted, error: insertErr } = await supabaseAdmin
+        .from('participants')
+        .insert({
+          id: newParticipantId,
+          room_id: room.id,
+          name: trimmedName,
+          exclusions: newExclusions,
+          assignee_id: chosenEdge.recipient.id,
+          dislikes: '',
+          has_revealed: false,
+        })
+        .select('id, name')
+        .single();
+
+      if (insertErr) throw insertErr;
+
+      // 2. Update giver (now gives to newParticipant)
+      const giverUpdate = {
+        assignee_id: newParticipantId,
+        ...(isResettingGiverReveal ? { has_revealed: false } : {}),
+      };
+
+      const { error: giverUpdateErr } = await supabaseAdmin
+        .from('participants')
+        .update(giverUpdate)
+        .eq('id', chosenEdge.giver.id);
+
+      if (giverUpdateErr) throw giverUpdateErr;
+
+      // 3. If exclusion was selected, add mutual exclusion to the other participant
+      if (exclusionParticipantId) {
+        const otherPerson = participants.find((p) => p.id === exclusionParticipantId);
+        if (otherPerson) {
+          const updatedExclusions = Array.from(
+            new Set([...(otherPerson.exclusions || []), newParticipantId])
+          );
+          await supabaseAdmin
+            .from('participants')
+            .update({ exclusions: updatedExclusions })
+            .eq('id', otherPerson.id);
+        }
+      }
+
+      return {
+        success: true,
+        participant: inserted,
+        notice: notice || `Added ${trimmedName} to the gift exchange!`,
+      };
+    }
+
+    // Strategy C: Full backtracking fallback if no single edge could be spliced
+    const allNodes = [
+      ...participants.map((p) => ({
+        id: p.id,
+        name: p.name,
+        exclusions: [
+          ...(p.exclusions || []),
+          ...(p.id === exclusionParticipantId ? [newParticipantId] : []),
+        ],
+      })),
+      {
+        id: newParticipantId,
+        name: trimmedName,
+        exclusions: newExclusions,
+      },
+    ];
+
+    const newAssignments = generateSecretSantaMatches(allNodes);
+    if (!newAssignments) {
+      return {
+        error:
+          'Could not add participant: No valid Secret Santa draw exists with these exclusion rules.',
+      };
+    }
+
+    // Insert new participant with its new assignment
+    const { data: inserted, error: insertErr } = await supabaseAdmin
+      .from('participants')
+      .insert({
+        id: newParticipantId,
+        room_id: room.id,
+        name: trimmedName,
+        exclusions: newExclusions,
+        assignee_id: newAssignments[newParticipantId],
+        dislikes: '',
+        has_revealed: false,
+      })
+      .select('id, name')
+      .single();
+
+    if (insertErr) throw insertErr;
+
+    // Update existing participants whose assignments or exclusions changed
+    for (const p of participants) {
+      const changedAssignee = newAssignments[p.id] !== p.assignee_id;
+      const needsExclusionUpdate = p.id === exclusionParticipantId;
+
+      if (changedAssignee || needsExclusionUpdate) {
+        const updatePayload = {};
+        if (changedAssignee) {
+          updatePayload.assignee_id = newAssignments[p.id];
+          if (p.has_revealed) {
+            updatePayload.has_revealed = false;
+          }
+        }
+        if (needsExclusionUpdate) {
+          updatePayload.exclusions = Array.from(
+            new Set([...(p.exclusions || []), newParticipantId])
+          );
+        }
+
+        await supabaseAdmin
+          .from('participants')
+          .update(updatePayload)
+          .eq('id', p.id);
+      }
+    }
+
+    return {
+      success: true,
+      participant: inserted,
+      notice: `Added ${trimmedName} and rebalanced the draw.`,
+    };
+  } catch (err) {
+    console.error('addParticipantToRoom error:', err);
+    return { error: 'Failed to add participant. Please try again.' };
+  }
 }
