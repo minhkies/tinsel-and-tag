@@ -22,6 +22,7 @@ import {
   Check,
 } from 'lucide-react';
 import { createRoom } from './actions.js';
+import { useLanguage, LanguageToggle } from '@/lib/LanguageContext';
 
 const AVATAR_PALETTES = [
   'bg-[#1B4332] text-[#FAF9F6]',
@@ -53,6 +54,7 @@ function extractRoomSlug(input) {
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const { t } = useLanguage();
 
   // Onboarding step: 1 (Welcome), 2 (Event Details), 3 (Participants)
   const [step, setStep] = useState(1);
@@ -82,7 +84,7 @@ export default function OnboardingPage() {
     e.preventDefault();
     const slug = extractRoomSlug(roomCodeInput);
     if (!slug) {
-      setJoinError('Please enter a valid room ID or link.');
+      setJoinError(t('onboarding.joinRoomError'));
       return;
     }
     setJoinError('');
@@ -93,7 +95,7 @@ export default function OnboardingPage() {
   const handleProceedToParticipants = (e) => {
     e?.preventDefault();
     if (!eventName.trim()) {
-      setDetailsError('Please enter an event or group name.');
+      setDetailsError(t('onboarding.errorEventName'));
       return;
     }
     setDetailsError('');
@@ -109,7 +111,7 @@ export default function OnboardingPage() {
     if (
       participants.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())
     ) {
-      setParticipantError(`"${trimmed}" is already on the list.`);
+      setParticipantError(t('onboarding.duplicateNameError', { name: trimmed }));
       return;
     }
 
@@ -147,7 +149,7 @@ export default function OnboardingPage() {
       !exclusionPersonB ||
       exclusionPersonA === exclusionPersonB
     ) {
-      setParticipantError('Select two different people to block.');
+      setParticipantError(t('onboarding.selectTwoError'));
       return;
     }
     setParticipantError('');
@@ -210,7 +212,7 @@ export default function OnboardingPage() {
   const handleSubmit = async () => {
     if (!eventName.trim()) {
       setStep(2);
-      setDetailsError('Please enter an event or group name.');
+      setDetailsError(t('onboarding.errorEventName'));
       return;
     }
 
@@ -240,7 +242,7 @@ export default function OnboardingPage() {
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#1C1917] pb-16">
       {/* Header */}
-      <header className="max-w-2xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between">
+      <header className="max-w-2xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between gap-3">
         <div
           onClick={() => setStep(1)}
           className="flex items-center gap-2.5 cursor-pointer group"
@@ -250,39 +252,44 @@ export default function OnboardingPage() {
           </div>
           <div>
             <h1 className="text-lg font-bold tracking-tight text-[#1C1917] leading-none">
-              Tinsel &amp; Tag
+              {t('common.appName')}
             </h1>
             <p className="text-xs text-[#78716C] mt-0.5">
-              Zero-account Secret Santa
+              {t('common.tagline')}
             </p>
           </div>
         </div>
 
-        {/* Step Indicator (Only when in Step 2 or 3) */}
-        {step > 1 && (
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-[#78716C]">
-            <span
-              onClick={() => setStep(2)}
-              className={`px-2.5 py-1 rounded-full cursor-pointer transition ${
-                step === 2
-                  ? 'bg-[#1B4332] text-[#FAF9F6]'
-                  : 'bg-white border border-[#E7E5E0] hover:border-[#1B4332]'
-              }`}
-            >
-              1. Details
-            </span>
-            <span>•</span>
-            <span
-              className={`px-2.5 py-1 rounded-full ${
-                step === 3
-                  ? 'bg-[#1B4332] text-[#FAF9F6]'
-                  : 'bg-white border border-[#E7E5E0]'
-              }`}
-            >
-              2. People
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-2.5">
+          {/* Step Indicator (Only when in Step 2 or 3) */}
+          {step > 1 && (
+            <div className="hidden sm:flex items-center gap-1.5 text-xs font-semibold text-[#78716C]">
+              <span
+                onClick={() => setStep(2)}
+                className={`px-2.5 py-1 rounded-full cursor-pointer transition ${
+                  step === 2
+                    ? 'bg-[#1B4332] text-[#FAF9F6]'
+                    : 'bg-white border border-[#E7E5E0] hover:border-[#1B4332]'
+                }`}
+              >
+                {t('onboarding.step2Indicator')}
+              </span>
+              <span>•</span>
+              <span
+                className={`px-2.5 py-1 rounded-full ${
+                  step === 3
+                    ? 'bg-[#1B4332] text-[#FAF9F6]'
+                    : 'bg-white border border-[#E7E5E0]'
+                }`}
+              >
+                {t('onboarding.step3Indicator')}
+              </span>
+            </div>
+          )}
+
+          {/* Language Toggle */}
+          <LanguageToggle />
+        </div>
       </header>
 
       <main className="max-w-2xl mx-auto px-4 mt-2">
@@ -295,16 +302,16 @@ export default function OnboardingPage() {
               {/* Festive Badge */}
               <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-xs font-semibold">
                 <Sparkles className="w-3.5 h-3.5 text-[#D4A373]" />
-                <span>Zero accounts • Zero emails • 100% Free</span>
+                <span>{t('onboarding.step1Badge')}</span>
               </div>
 
               {/* Title & Description */}
               <div className="space-y-3 max-w-lg mx-auto">
                 <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#1C1917] leading-tight">
-                  Gift exchanges made joyful and effortless.
+                  {t('onboarding.step1Title')}
                 </h2>
                 <p className="text-sm sm:text-base text-[#57534E] leading-relaxed">
-                  Tinsel &amp; Tag is the easiest Secret Santa generator. No apps to download, no accounts to create, and no email lists. Create a room in seconds and share one link with your group.
+                  {t('onboarding.step1Desc')}
                 </p>
               </div>
 
@@ -314,9 +321,11 @@ export default function OnboardingPage() {
                   <div className="w-8 h-8 rounded-xl bg-[#1B4332]/10 text-[#1B4332] flex items-center justify-center mb-2.5 font-bold">
                     <Check className="w-4 h-4" />
                   </div>
-                  <h4 className="font-bold text-sm text-[#1C1917]">No Signups</h4>
+                  <h4 className="font-bold text-sm text-[#1C1917]">
+                    {t('onboarding.feat1Title')}
+                  </h4>
                   <p className="text-xs text-[#78716C] mt-1">
-                    Everyone picks their name &amp; sets a quick 4-digit PIN.
+                    {t('onboarding.feat1Desc')}
                   </p>
                 </div>
 
@@ -324,9 +333,11 @@ export default function OnboardingPage() {
                   <div className="w-8 h-8 rounded-xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center mb-2.5 font-bold">
                     <Shuffle className="w-4 h-4" />
                   </div>
-                  <h4 className="font-bold text-sm text-[#1C1917]">Smart Rules</h4>
+                  <h4 className="font-bold text-sm text-[#1C1917]">
+                    {t('onboarding.feat2Title')}
+                  </h4>
                   <p className="text-xs text-[#78716C] mt-1">
-                    Block couples or housemates from drawing each other.
+                    {t('onboarding.feat2Desc')}
                   </p>
                 </div>
 
@@ -334,9 +345,11 @@ export default function OnboardingPage() {
                   <div className="w-8 h-8 rounded-xl bg-[#C84B31]/15 text-[#C84B31] flex items-center justify-center mb-2.5 font-bold">
                     <Gift className="w-4 h-4" />
                   </div>
-                  <h4 className="font-bold text-sm text-[#1C1917]">Wishlists</h4>
+                  <h4 className="font-bold text-sm text-[#1C1917]">
+                    {t('onboarding.feat3Title')}
+                  </h4>
                   <p className="text-xs text-[#78716C] mt-1">
-                    Add wish items, links, and allergies without spoiling surprises.
+                    {t('onboarding.feat3Desc')}
                   </p>
                 </div>
               </div>
@@ -349,7 +362,7 @@ export default function OnboardingPage() {
                   onClick={() => setStep(2)}
                   className="w-full py-4 px-6 rounded-2xl bg-[#1B4332] hover:bg-[#143326] text-[#FAF9F6] font-bold text-base shadow-md transition flex items-center justify-center gap-2 cursor-pointer group"
                 >
-                  <span>Get Started</span>
+                  <span>{t('onboarding.getStarted')}</span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition" />
                 </button>
 
@@ -364,7 +377,7 @@ export default function OnboardingPage() {
                     className="w-full py-3.5 px-6 rounded-2xl bg-[#FAF9F6] hover:bg-[#F2EFE9] text-[#1C1917] font-semibold text-sm border border-[#E7E5E0] transition flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <LogIn className="w-4 h-4 text-[#8C6D46]" />
-                    <span>Already have a room ID? Enter it here</span>
+                    <span>{t('onboarding.haveRoomCode')}</span>
                   </button>
                 ) : (
                   <form
@@ -373,14 +386,14 @@ export default function OnboardingPage() {
                   >
                     <div className="flex items-center justify-between">
                       <label className="text-xs font-bold uppercase tracking-wider text-[#57534E]">
-                        Enter Room ID or Invite Link
+                        {t('onboarding.joinRoomLabel')}
                       </label>
                       <button
                         type="button"
                         onClick={() => setShowJoinInput(false)}
                         className="text-xs text-[#78716C] hover:text-[#1C1917] cursor-pointer"
                       >
-                        Cancel
+                        {t('common.cancel')}
                       </button>
                     </div>
 
@@ -393,14 +406,14 @@ export default function OnboardingPage() {
                           if (joinError) setJoinError('');
                         }}
                         autoFocus
-                        placeholder="e.g. qhqzud or /room/qhqzud"
+                        placeholder={t('onboarding.joinRoomPlaceholder')}
                         className="flex-1 px-4 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm text-[#1C1917] font-mono outline-none focus:border-[#1B4332]"
                       />
                       <button
                         type="submit"
                         className="px-5 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] text-[#FAF9F6] text-sm font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
                       >
-                        <span>Join</span>
+                        <span>{t('onboarding.joinRoomBtn')}</span>
                         <ArrowRight className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -429,25 +442,25 @@ export default function OnboardingPage() {
                 className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#78716C] hover:text-[#1C1917] mb-5 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Welcome</span>
+                <span>{t('onboarding.backToWelcome')}</span>
               </button>
 
               <div className="mb-6">
                 <span className="text-xs font-bold uppercase tracking-wider text-[#8C6D46]">
-                  Step 1 of 2
+                  {t('onboarding.step2Indicator')}
                 </span>
                 <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-[#1C1917] mt-1">
-                  Event Details
+                  {t('onboarding.step2Title')}
                 </h2>
                 <p className="text-sm text-[#57534E] mt-1">
-                  Name your exchange, set a suggested budget, and pick a gift date.
+                  {t('onboarding.step2Subtitle')}
                 </p>
               </div>
 
               <form onSubmit={handleProceedToParticipants} className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                    Group or Event Name <span className="text-[#C84B31]">*</span>
+                    {t('onboarding.eventNameLabel')} <span className="text-[#C84B31]">*</span>
                   </label>
                   <input
                     type="text"
@@ -457,7 +470,7 @@ export default function OnboardingPage() {
                       if (detailsError) setDetailsError('');
                     }}
                     autoFocus
-                    placeholder="e.g., Holiday Gift Exchange 2026, Smith Family"
+                    placeholder={t('onboarding.eventNamePlaceholder')}
                     className="w-full px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm sm:text-base"
                   />
                 </div>
@@ -465,7 +478,7 @@ export default function OnboardingPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                      Gift Budget
+                      {t('onboarding.budgetLabel')}
                     </label>
                     <div className="relative">
                       <DollarSign className="w-4 h-4 text-[#78716C] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -473,7 +486,7 @@ export default function OnboardingPage() {
                         type="text"
                         value={budget}
                         onChange={(e) => setBudget(e.target.value)}
-                        placeholder="$50 (or No limit)"
+                        placeholder={t('onboarding.budgetPlaceholder')}
                         className="w-full pl-9 pr-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm sm:text-base"
                       />
                     </div>
@@ -481,7 +494,7 @@ export default function OnboardingPage() {
 
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                      Exchange Date
+                      {t('onboarding.dateLabel')}
                     </label>
                     <div className="relative">
                       <Calendar className="w-4 h-4 text-[#78716C] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -507,7 +520,7 @@ export default function OnboardingPage() {
                     type="submit"
                     className="w-full py-4 px-6 rounded-2xl bg-[#1B4332] hover:bg-[#143326] text-[#FAF9F6] font-bold text-base shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    <span>Next: Add Participants</span>
+                    <span>{t('onboarding.nextAddPeople')}</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </div>
@@ -528,25 +541,25 @@ export default function OnboardingPage() {
                 className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#78716C] hover:text-[#1C1917] mb-5 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Event Details</span>
+                <span>{t('onboarding.backToDetails')}</span>
               </button>
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
                 <div>
                   <span className="text-xs font-bold uppercase tracking-wider text-[#8C6D46]">
-                    Step 2 of 2 • Optional
+                    {t('onboarding.step3Indicator')}
                   </span>
                   <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-[#1C1917] mt-1">
-                    Add Participants
+                    {t('onboarding.step3Title')}
                   </h2>
                   <p className="text-sm text-[#57534E] mt-1">
-                    Add names now, or create the room and add people later.
+                    {t('onboarding.step3Subtitle')}
                   </p>
                 </div>
 
                 <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] text-xs font-semibold text-[#57534E] self-start sm:self-auto">
                   <Users className="w-3.5 h-3.5 text-[#1B4332]" />
-                  <span>{participants.length} added</span>
+                  <span>{t('onboarding.peopleAddedCount', { n: participants.length })}</span>
                 </div>
               </div>
 
@@ -560,7 +573,7 @@ export default function OnboardingPage() {
                     if (participantError) setParticipantError('');
                   }}
                   autoFocus
-                  placeholder="Enter a person's name (e.g. Grandma, Alex)..."
+                  placeholder={t('onboarding.addPersonPlaceholder')}
                   className="flex-1 px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] text-sm focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition"
                 />
                 <button
@@ -569,7 +582,7 @@ export default function OnboardingPage() {
                   className="px-5 py-3 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] font-semibold flex items-center gap-1.5 transition cursor-pointer text-sm shrink-0"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>Add</span>
+                  <span>{t('onboarding.addBtn')}</span>
                 </button>
               </form>
 
@@ -580,10 +593,10 @@ export default function OnboardingPage() {
                     <Users className="w-5 h-5 text-[#8C6D46]" />
                   </div>
                   <h4 className="font-bold text-sm text-[#1C1917]">
-                    No participants added yet
+                    {t('onboarding.emptyPeopleTitle')}
                   </h4>
                   <p className="text-xs text-[#78716C] max-w-sm mx-auto">
-                    You can type names above, or click below to create the room now and add people whenever you&apos;re ready.
+                    {t('onboarding.emptyPeopleDesc')}
                   </p>
                 </div>
               ) : (
@@ -628,10 +641,10 @@ export default function OnboardingPage() {
                     <div className="flex items-center gap-2">
                       <ShieldAlert className="w-4 h-4 text-[#C84B31]" />
                       <span className="text-sm font-bold text-[#1C1917]">
-                        Exclusion Rules (Couples / Housemates)
+                        {t('onboarding.exclusionsTitle')}
                       </span>
                       <span className="text-xs px-2 py-0.5 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] text-[#57534E]">
-                        {getExclusionPairs().length} active
+                        {t('onboarding.exclusionsActive', { n: getExclusionPairs().length })}
                       </span>
                     </div>
                     {showExclusions ? (
@@ -657,7 +670,7 @@ export default function OnboardingPage() {
                         </select>
 
                         <span className="self-center text-xs font-semibold text-[#78716C] px-1">
-                          cannot draw
+                          {t('onboarding.cannotDraw')}
                         </span>
 
                         <select
@@ -677,7 +690,7 @@ export default function OnboardingPage() {
                           onClick={handleAddExclusion}
                           className="px-4 py-2.5 rounded-xl border border-[#E7E5E0] bg-[#FAF9F6] hover:bg-[#F2EFE9] text-sm font-semibold text-[#1C1917] transition cursor-pointer"
                         >
-                          Block Pair
+                          {t('onboarding.blockPairBtn')}
                         </button>
                       </div>
 
@@ -714,8 +727,8 @@ export default function OnboardingPage() {
                 <Sparkles className="w-4 h-4 text-[#D4A373] shrink-0 mt-0.5" />
                 <span>
                   {participants.length >= 3
-                    ? 'Secret Santa matches will be drawn immediately when created. You can still add more people later without spoiling matches!'
-                    : 'Participants can be added and invited anytime after the room is created.'}
+                    ? t('onboarding.drawNoticeMulti')
+                    : t('onboarding.drawNoticeEmpty')}
                 </span>
               </div>
 
@@ -736,20 +749,20 @@ export default function OnboardingPage() {
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin text-[#D4A373]" />
-                    <span>Creating Room...</span>
+                    <span>{t('onboarding.creatingRoom')}</span>
                   </>
                 ) : participants.length >= 3 ? (
                   <>
                     <Shuffle className="w-5 h-5 text-[#D4A373]" />
-                    <span>Create Room &amp; Draw Names</span>
+                    <span>{t('onboarding.createAndDraw')}</span>
                   </>
                 ) : (
                   <>
                     <Gift className="w-5 h-5 text-[#D4A373]" />
                     <span>
                       {participants.length === 0
-                        ? 'Create Room (Add People Later)'
-                        : 'Create Room'}
+                        ? t('onboarding.createEmpty')
+                        : t('onboarding.createSimple')}
                     </span>
                   </>
                 )}

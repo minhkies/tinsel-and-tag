@@ -32,6 +32,7 @@ import {
     Loader2,
 } from 'lucide-react';
 import PinInput from '@/components/PinInput';
+import { useLanguage, LanguageToggle } from '@/lib/LanguageContext';
 import {
     getRoomLobby,
     claimOrUnlockParticipant,
@@ -76,6 +77,7 @@ function getDomainLabel(url) {
 function RoomContent() {
     const params = useParams();
     const slug = params?.slug;
+    const { t, language } = useLanguage();
 
     // Loading & error states
     const [loading, setLoading] = useState(true);
@@ -191,9 +193,12 @@ function RoomContent() {
     }, [slug, loadRoomData]);
 
     const formatDate = (isoDate) => {
-        if (!isoDate) return 'TBD';
+        if (!isoDate) return t('common.tbd');
         const [y, m, d] = isoDate.split('-').map(Number);
         if (!y || !m || !d) return isoDate;
+        if (language === 'vi') {
+            return `${d}/${m}/${y}`;
+        }
         return new Date(y, m - 1, d).toLocaleDateString('en-US', {
             month: 'short',
             day: 'numeric',
@@ -208,7 +213,7 @@ function RoomContent() {
             navigator.clipboard?.writeText(url.toString()).catch(() => { });
         }
         setCopiedLink(true);
-        showToast('Group invite link copied!');
+        showToast(t('room.copiedLink'));
         setTimeout(() => setCopiedLink(false), 2500);
     };
 
@@ -216,7 +221,7 @@ function RoomContent() {
         if (typeof window !== 'undefined' && adminToken) {
             const organizerUrl = `${window.location.origin}/room/${slug}?admin=${adminToken}`;
             navigator.clipboard?.writeText(organizerUrl).catch(() => { });
-            showToast('Organizer link copied (keep private!)');
+            showToast(t('room.organizerLinkToast'));
         }
     };
 
@@ -438,18 +443,21 @@ function RoomContent() {
 
     if (loadError || !room) {
         return (
-            <div className="min-h-screen bg-[#FAF9F6] flex flex-col items-center justify-center p-4 text-center">
+            <div className="min-h-screen bg-[#FAF9F6] flex flex-col items-center justify-center p-4 text-center relative">
+                <div className="absolute top-6 right-6">
+                    <LanguageToggle />
+                </div>
                 <h2 className="text-2xl font-bold text-[#1C1917] mb-2">
-                    Room Not Found
+                    {t('room.roomNotFound')}
                 </h2>
                 <p className="text-sm text-[#57534E] mb-6">
-                    {loadError || 'Double-check your invite link or create a new room.'}
+                    {loadError || t('room.roomNotFoundDesc')}
                 </p>
                 <Link
                     href="/"
                     className="px-5 py-3 rounded-2xl bg-[#1B4332] text-[#FAF9F6] font-semibold text-sm"
                 >
-                    Create a New Secret Santa Room
+                    {t('room.createRoomBtn')}
                 </Link>
             </div>
         );
@@ -470,24 +478,27 @@ function RoomContent() {
             )}
 
             {/* Header */}
-            <header className="max-w-3xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between">
+            <header className="max-w-3xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between gap-3">
                 <Link href="/" className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-2xl bg-[#1B4332] text-[#FAF9F6] flex items-center justify-center shadow-sm">
                         <Gift className="w-5 h-5 text-[#D4A373]" />
                     </div>
                     <div>
                         <h1 className="text-lg font-bold tracking-tight text-[#1C1917] leading-none">
-                            Tinsel &amp; Tag
+                            {t('common.appName')}
                         </h1>
                         <p className="text-xs text-[#78716C] mt-0.5">
-                            Zero-account Secret Santa
+                            {t('common.tagline')}
                         </p>
                     </div>
                 </Link>
 
-                <span className="text-xs font-mono bg-white border border-[#E7E5E0] px-3 py-1.5 rounded-full text-[#57534E]">
-                    /room/{room.slug}
-                </span>
+                <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono bg-white border border-[#E7E5E0] px-3 py-1.5 rounded-full text-[#57534E]">
+                        /room/{room.slug}
+                    </span>
+                    <LanguageToggle />
+                </div>
             </header>
 
             <main className="max-w-3xl mx-auto px-4 mt-2">
@@ -501,11 +512,11 @@ function RoomContent() {
                                 <div>
                                     <div className="flex flex-wrap items-center gap-2 mb-2">
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-xs font-semibold">
-                                            <Check className="w-3.5 h-3.5" /> {participants.length >= 2 ? 'Names Drawn' : 'Setup Mode'}
+                                            <Check className="w-3.5 h-3.5" /> {participants.length >= 2 ? t('room.namesDrawn') : t('room.setupMode')}
                                         </span>
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] text-[#57534E] text-xs font-medium">
                                             <DollarSign className="w-3.5 h-3.5 text-[#D4A373]" />
-                                            Budget: {room.budget}
+                                            {t('room.budgetPrefix')} {room.budget}
                                         </span>
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] text-[#57534E] text-xs font-medium">
                                             <Calendar className="w-3.5 h-3.5 text-[#C84B31]" />
@@ -516,8 +527,7 @@ function RoomContent() {
                                         {room.name}
                                     </h2>
                                     <p className="text-sm text-[#57534E] mt-1">
-                                        Tap your name below to set a 4-digit PIN and reveal your
-                                        Secret Santa recipient.
+                                        {t('room.lobbySubtitle')}
                                     </p>
                                 </div>
 
@@ -532,12 +542,12 @@ function RoomContent() {
                                     {copiedLink ? (
                                         <>
                                             <Check className="w-4 h-4 text-[#D4A373]" />
-                                            <span>Copied Link!</span>
+                                            <span>{t('room.copiedLink')}</span>
                                         </>
                                     ) : (
                                         <>
                                             <Copy className="w-4 h-4 text-[#1B4332]" />
-                                            <span>Copy Group Invite Link</span>
+                                            <span>{t('room.copyInviteLink')}</span>
                                         </>
                                     )}
                                 </button>
@@ -547,7 +557,7 @@ function RoomContent() {
                             <div className="mt-6 pt-5 border-t border-[#E7E5E0] flex flex-wrap items-center justify-between gap-3">
                                 <div className="flex items-center gap-3">
                                     <span className="text-xs font-semibold text-[#57534E]">
-                                        {claimedCount} of {participants.length} claimed
+                                        {t('room.claimedProgress', { claimed: claimedCount, total: participants.length })}
                                     </span>
                                     <div className="w-28 h-2 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] overflow-hidden">
                                         <div
@@ -566,7 +576,7 @@ function RoomContent() {
                                         className="text-xs font-semibold text-[#8C6D46] hover:text-[#1C1917] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#D4A373]/15 transition cursor-pointer"
                                     >
                                         <KeyRound className="w-3.5 h-3.5" />
-                                        <span>Organizer Controls</span>
+                                        <span>{t('room.organizerControls')}</span>
                                         {showOrganizerDrawer ? (
                                             <ChevronUp className="w-3.5 h-3.5" />
                                         ) : (
@@ -582,7 +592,7 @@ function RoomContent() {
                                     <div>
                                         <div className="flex items-center justify-between mb-2">
                                             <span className="text-xs font-bold uppercase tracking-wider text-[#57534E]">
-                                                Add Person to Room
+                                                {t('room.addPersonToRoom')}
                                             </span>
                                             <button
                                                 type="button"
@@ -594,7 +604,7 @@ function RoomContent() {
                                                 }}
                                                 className="text-xs text-[#8C6D46] hover:underline flex items-center gap-1 cursor-pointer"
                                             >
-                                                <span>Custom exclusions</span>
+                                                <span>{t('room.customExclusions')}</span>
                                                 <ChevronDown className="w-3 h-3 -rotate-90" />
                                             </button>
                                         </div>
@@ -603,7 +613,7 @@ function RoomContent() {
                                                 type="text"
                                                 value={quickAddName}
                                                 onChange={(e) => setQuickAddName(e.target.value)}
-                                                placeholder="New participant's name (e.g. Maya)"
+                                                placeholder={t('room.newParticipantPlaceholder')}
                                                 className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
                                             />
                                             <button
@@ -616,7 +626,7 @@ function RoomContent() {
                                                 ) : (
                                                     <Plus className="w-3.5 h-3.5" />
                                                 )}
-                                                <span>Add</span>
+                                                <span>{t('common.add')}</span>
                                             </button>
                                         </form>
                                     </div>
@@ -624,7 +634,7 @@ function RoomContent() {
                                     {/* PIN Resets */}
                                     <div className="pt-3 border-t border-[#E7E5E0]">
                                         <span className="text-xs font-bold uppercase tracking-wider text-[#57534E] block mb-2">
-                                            Reset Participant PINs (Without Reshuffling)
+                                            {t('room.resetPinsTitle')}
                                         </span>
                                         <div className="divide-y divide-[#E7E5E0] max-h-48 overflow-y-auto pr-1">
                                             {participants.map((p) => (
@@ -638,12 +648,12 @@ function RoomContent() {
                                                         </span>
                                                         {p.isClaimed ? (
                                                             <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#1B4332]/10 text-[#1B4332] font-medium">
-                                                                PIN Set {p.pinHint ? `(${p.pinHint})` : ''}
-                                                                {p.hasRevealed ? ' • Opened' : ''}
+                                                                {t('room.pinSetBadge')} {p.pinHint ? `(${p.pinHint})` : ''}
+                                                                {p.hasRevealed ? ` • ${t('room.openedBadge')}` : ''}
                                                             </span>
                                                         ) : (
                                                             <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#E7E5E0]/70 text-[#78716C]">
-                                                                Unclaimed
+                                                                {t('room.unclaimedBadge')}
                                                             </span>
                                                         )}
                                                     </div>
@@ -653,7 +663,7 @@ function RoomContent() {
                                                             onClick={() => handleResetPin(p.id, p.name)}
                                                             className="text-xs font-semibold text-[#C84B31] hover:underline cursor-pointer"
                                                         >
-                                                            Reset PIN
+                                                            {t('room.resetPinBtn')}
                                                         </button>
                                                     )}
                                                 </div>
@@ -664,7 +674,7 @@ function RoomContent() {
                                     {/* Secret Organizer Link */}
                                     <div className="pt-3 border-t border-[#E7E5E0] flex items-center justify-between">
                                         <span className="text-xs text-[#78716C]">
-                                            Save organizer link for this room:
+                                            {t('room.saveOrganizerLink')}
                                         </span>
                                         <button
                                             type="button"
@@ -672,7 +682,7 @@ function RoomContent() {
                                             className="text-xs font-semibold text-[#8C6D46] hover:underline flex items-center gap-1 cursor-pointer"
                                         >
                                             <Copy className="w-3 h-3" />
-                                            <span>Copy Organizer Link</span>
+                                            <span>{t('room.copyOrganizerLink')}</span>
                                         </button>
                                     </div>
                                 </div>
@@ -684,10 +694,10 @@ function RoomContent() {
                             <div className="flex items-center justify-between mb-3 px-1">
                                 <div className="flex items-center gap-2">
                                     <h3 className="text-sm font-bold uppercase tracking-wider text-[#57534E]">
-                                        Who are you?
+                                        {t('room.whoAreYou')}
                                     </h3>
                                     <span className="text-xs text-[#78716C] font-normal">
-                                        ({participants.length} total)
+                                        {t('room.totalCount', { n: participants.length })}
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -702,7 +712,7 @@ function RoomContent() {
                                         className="text-xs font-semibold text-[#1B4332] hover:text-[#143326] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1B4332]/10 hover:bg-[#1B4332]/15 transition cursor-pointer"
                                     >
                                         <Plus className="w-3.5 h-3.5" />
-                                        <span>Add Person</span>
+                                        <span>{t('room.addPersonBtn')}</span>
                                     </button>
                                     {activeParticipantId && dashboard && (
                                         <button
@@ -710,7 +720,7 @@ function RoomContent() {
                                             onClick={() => setView('dashboard')}
                                             className="text-xs font-semibold text-[#1B4332] hover:underline flex items-center gap-1 cursor-pointer"
                                         >
-                                            <span>Return to my match</span>
+                                            <span>{t('room.returnToMatch')}</span>
                                             <ArrowLeft className="w-3.5 h-3.5 rotate-180" />
                                         </button>
                                     )}
@@ -723,9 +733,9 @@ function RoomContent() {
                                         <div className="w-10 h-10 rounded-2xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center mx-auto">
                                             <Gift className="w-5 h-5" />
                                         </div>
-                                        <h4 className="font-bold text-base text-[#1C1917]">No participants yet</h4>
+                                        <h4 className="font-bold text-base text-[#1C1917]">{t('room.noParticipantsTitle')}</h4>
                                         <p className="text-xs text-[#57534E] max-w-sm mx-auto">
-                                            Add friends and family using the button below. Once people join, everyone can claim their spot!
+                                            {t('room.noParticipantsDesc')}
                                         </p>
                                     </div>
                                 )}
@@ -763,17 +773,17 @@ function RoomContent() {
                                                     <div className="mt-0.5">
                                                         {isCurrentSession ? (
                                                             <span className="text-xs text-[#D8E2DC] font-medium">
-                                                                Active session • Tap to open
+                                                                {t('room.activeSession')}
                                                             </span>
                                                         ) : person.isClaimed ? (
                                                             <span className="text-xs text-[#78716C] flex items-center gap-1">
                                                                 <Lock className="w-3 h-3 text-[#8C6D46]" />
-                                                                Claimed • Tap to unlock
+                                                                {t('room.claimedTap')}
                                                             </span>
                                                         ) : (
                                                             <span className="text-xs text-[#1B4332] font-semibold flex items-center gap-1">
                                                                 <UserCheck className="w-3.5 h-3.5" />
-                                                                Available • Claim spot
+                                                                {t('room.availableTap')}
                                                             </span>
                                                         )}
                                                     </div>
@@ -815,10 +825,10 @@ function RoomContent() {
                                         </div>
                                         <div>
                                             <div className="font-bold text-base text-[#1C1917] group-hover:text-[#1B4332] transition">
-                                                Add someone else
+                                                {t('room.addSomeoneElse')}
                                             </div>
                                             <div className="text-xs text-[#78716C] mt-0.5">
-                                                Someone missed? Add them to the exchange
+                                                {t('room.someoneMissed')}
                                             </div>
                                         </div>
                                     </div>
@@ -843,7 +853,7 @@ function RoomContent() {
                                 className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#57534E] hover:text-[#1C1917] cursor-pointer"
                             >
                                 <ArrowLeft className="w-4 h-4" />
-                                <span>Back to Lobby</span>
+                                <span>{t('dashboard.backToLobby')}</span>
                             </button>
 
                             <button
@@ -852,7 +862,7 @@ function RoomContent() {
                                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white border border-[#E7E5E0] hover:bg-[#FDF2F0] hover:text-[#C84B31] text-xs font-semibold text-[#57534E] transition cursor-pointer"
                             >
                                 <Lock className="w-3.5 h-3.5" />
-                                <span>Lock &amp; Switch Person</span>
+                                <span>{t('dashboard.lockSwitch')}</span>
                             </button>
                         </div>
 
@@ -863,7 +873,7 @@ function RoomContent() {
                                     {getInitials(dashboard.me.name)}
                                 </div>
                                 <div>
-                                    <p className="text-xs text-[#78716C]">Signed in as</p>
+                                    <p className="text-xs text-[#78716C]">{t('dashboard.signedInAs')}</p>
                                     <p className="font-bold text-[#1C1917]">
                                         {dashboard.me.name}
                                     </p>
@@ -886,18 +896,17 @@ function RoomContent() {
                                         <Gift className="w-8 h-8 text-[#D4A373]" />
                                     </div>
                                     <span className="text-xs font-bold uppercase tracking-[0.2em] text-[#D4A373] mb-2">
-                                        Top Secret • For {dashboard.me.name}’s Eyes Only
+                                        {t('dashboard.topSecretFor', { name: dashboard.me.name })}
                                     </span>
                                     <h3 className="text-2xl sm:text-3xl font-bold tracking-tight mb-3">
-                                        Your Secret Santa Match is Ready
+                                        {t('dashboard.envelopeTitle')}
                                     </h3>
                                     <p className="text-sm text-[#D8E2DC] max-w-md mb-7">
-                                        Make sure nobody is peeking over your shoulder, then tap
-                                        below to open your envelope.
+                                        {t('dashboard.envelopeDesc')}
                                     </p>
                                     <span className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full bg-[#D4A373] text-[#1C1917] font-bold text-sm shadow-lg">
                                         <Eye className="w-4 h-4" />
-                                        <span>Tap to Reveal My Match</span>
+                                        <span>{t('dashboard.envelopeBtn')}</span>
                                     </span>
                                 </div>
                             </div>
@@ -908,7 +917,7 @@ function RoomContent() {
                                         <div className="flex items-center gap-2">
                                             <Sparkles className="w-4 h-4 text-[#D4A373]" />
                                             <span className="text-xs font-bold uppercase tracking-wider text-[#D8E2DC]">
-                                                You are Secret Santa for
+                                                {t('dashboard.secretSantaFor')}
                                             </span>
                                         </div>
                                         <button
@@ -917,7 +926,7 @@ function RoomContent() {
                                             className="text-xs text-[#D8E2DC] hover:text-white flex items-center gap-1 cursor-pointer"
                                         >
                                             <EyeOff className="w-3.5 h-3.5" />
-                                            <span>Hide</span>
+                                            <span>{t('dashboard.hide')}</span>
                                         </button>
                                     </div>
 
@@ -931,7 +940,7 @@ function RoomContent() {
                                                     {dashboard.recipient.name}
                                                 </h3>
                                                 <p className="text-xs text-[#78716C] mt-1">
-                                                    Budget: {room.budget} • Exchange:{' '}
+                                                    {t('dashboard.budgetPrefix')} {room.budget} • {t('dashboard.exchangePrefix')}{' '}
                                                     {formatDate(room.exchangeDate)}
                                                 </p>
                                             </div>
@@ -944,7 +953,7 @@ function RoomContent() {
                                                     <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#1B4332]">
                                                         <Heart className="w-4 h-4 text-[#C84B31]" />
                                                         <span>
-                                                            What {dashboard.recipient.name} is Wishing For
+                                                            {t('dashboard.recipientWishlistTitle', { name: dashboard.recipient.name })}
                                                         </span>
                                                     </div>
                                                 </div>
@@ -987,12 +996,12 @@ function RoomContent() {
                                                                         rel="noopener noreferrer"
                                                                         className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1B4332] hover:bg-[#143326] text-[#FAF9F6] text-xs font-semibold transition"
                                                                     >
-                                                                        <span>View Link</span>
+                                                                        <span>{t('dashboard.viewLink')}</span>
                                                                         <ExternalLink className="w-3.5 h-3.5 text-[#D4A373]" />
                                                                     </a>
                                                                 ) : (
                                                                     <span className="shrink-0 text-[11px] font-medium text-[#A8A29E] px-2.5 py-1 rounded-lg bg-[#FAF9F6] border border-[#E7E5E0]">
-                                                                        Idea only
+                                                                        {t('dashboard.ideaOnly')}
                                                                     </span>
                                                                 )}
                                                             </div>
@@ -1000,7 +1009,7 @@ function RoomContent() {
                                                     </div>
                                                 ) : (
                                                     <p className="text-sm text-[#A8A29E] italic py-2">
-                                                        Hasn’t added gift ideas yet—check back later!
+                                                        {t('dashboard.recipientNoItems', { name: dashboard.recipient.name })}
                                                     </p>
                                                 )}
                                             </div>
@@ -1009,7 +1018,7 @@ function RoomContent() {
                                             <div className="p-4 rounded-2xl bg-[#FDF2F0]/60 border border-[#F5D0C8]">
                                                 <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#9E3B24] mb-2">
                                                     <Ban className="w-4 h-4 text-[#C84B31]" />
-                                                    <span>Allergies &amp; Things to Avoid</span>
+                                                    <span>{t('dashboard.allergiesTitle')}</span>
                                                 </div>
                                                 {dashboard.recipient.dislikes?.trim() ? (
                                                     <p className="text-sm text-[#1C1917] whitespace-pre-line">
@@ -1017,7 +1026,7 @@ function RoomContent() {
                                                     </p>
                                                 ) : (
                                                     <p className="text-sm text-[#A8A29E] italic">
-                                                        No dislikes or allergies listed.
+                                                        {t('dashboard.noDislikesListed')}
                                                     </p>
                                                 )}
                                             </div>
@@ -1032,17 +1041,16 @@ function RoomContent() {
                             <div className="flex items-center justify-between mb-5">
                                 <div>
                                     <h3 className="text-lg font-bold text-[#1C1917]">
-                                        My Wishlist &amp; Gift Hints
+                                        {t('dashboard.myWishlistTitle')}
                                     </h3>
                                     <p className="text-xs text-[#78716C] mt-0.5">
-                                        Add gift ideas with optional links. Changes save
-                                        immediately for your Secret Santa!
+                                        {t('dashboard.myWishlistSubtitle')}
                                     </p>
                                 </div>
 
                                 {savedBadge && (
                                     <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-xs font-semibold">
-                                        <Check className="w-3.5 h-3.5" /> Saved
+                                        <Check className="w-3.5 h-3.5" /> {t('dashboard.saved')}
                                     </span>
                                 )}
                             </div>
@@ -1050,7 +1058,7 @@ function RoomContent() {
                             <div className="space-y-6">
                                 <div>
                                     <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-2.5">
-                                        My Gift List ({dashboard.me.wishlist.length})
+                                        {t('dashboard.myGiftListCount', { n: dashboard.me.wishlist.length })}
                                     </label>
 
                                     {dashboard.me.wishlist.length > 0 && (
@@ -1071,7 +1079,7 @@ function RoomContent() {
                                                                         title: e.target.value,
                                                                     })
                                                                 }
-                                                                placeholder="Gift item name *"
+                                                                placeholder={t('dashboard.itemNameEditPlaceholder')}
                                                                 className="sm:col-span-2 px-3 py-2 rounded-xl bg-white border border-[#E7E5E0] text-sm font-medium outline-none"
                                                             />
                                                             <input
@@ -1083,7 +1091,7 @@ function RoomContent() {
                                                                         note: e.target.value,
                                                                     })
                                                                 }
-                                                                placeholder="Price or note"
+                                                                placeholder={t('dashboard.itemNoteEditPlaceholder')}
                                                                 className="px-3 py-2 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none"
                                                             />
                                                         </div>
@@ -1099,7 +1107,7 @@ function RoomContent() {
                                                                             url: e.target.value,
                                                                         })
                                                                     }
-                                                                    placeholder="Optional product link (https://...)"
+                                                                    placeholder={t('dashboard.itemUrlEditPlaceholder')}
                                                                     className="w-full pl-9 pr-3 py-2 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none"
                                                                 />
                                                             </div>
@@ -1109,14 +1117,14 @@ function RoomContent() {
                                                                     onClick={() => setEditingItemId(null)}
                                                                     className="px-3 py-2 rounded-xl text-xs font-semibold text-[#57534E] cursor-pointer"
                                                                 >
-                                                                    Cancel
+                                                                    {t('common.cancel')}
                                                                 </button>
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => handleSaveEditItem(item.id)}
                                                                     className="px-4 py-2 rounded-xl bg-[#1B4332] text-[#FAF9F6] text-xs font-semibold cursor-pointer"
                                                                 >
-                                                                    Save Item
+                                                                    {t('dashboard.saveItem')}
                                                                 </button>
                                                             </div>
                                                         </div>
@@ -1187,7 +1195,7 @@ function RoomContent() {
                                     >
                                         <div className="text-xs font-bold text-[#1C1917] flex items-center gap-1.5">
                                             <Plus className="w-3.5 h-3.5 text-[#1B4332]" />
-                                            <span>Add a Wishlist Item</span>
+                                            <span>{t('dashboard.addItemTitle')}</span>
                                         </div>
 
                                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -1195,14 +1203,14 @@ function RoomContent() {
                                                 type="text"
                                                 value={newItemTitle}
                                                 onChange={(e) => setNewItemTitle(e.target.value)}
-                                                placeholder="Item name (e.g. Ceramic Pour-Over)"
+                                                placeholder={t('dashboard.itemNamePlaceholder')}
                                                 className="sm:col-span-2 px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
                                             />
                                             <input
                                                 type="text"
                                                 value={newItemNote}
                                                 onChange={(e) => setNewItemNote(e.target.value)}
-                                                placeholder="Price / Size / Color"
+                                                placeholder={t('dashboard.itemNotePlaceholder')}
                                                 className="px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
                                             />
                                         </div>
@@ -1214,7 +1222,7 @@ function RoomContent() {
                                                     type="text"
                                                     value={newItemUrl}
                                                     onChange={(e) => setNewItemUrl(e.target.value)}
-                                                    placeholder="Product link (optional, e.g. amazon.ca/...)"
+                                                    placeholder={t('dashboard.itemUrlPlaceholder')}
                                                     className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
                                                 />
                                             </div>
@@ -1224,7 +1232,7 @@ function RoomContent() {
                                                 className="px-5 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-semibold flex items-center justify-center gap-1.5 transition shrink-0 cursor-pointer"
                                             >
                                                 <Plus className="w-4 h-4" />
-                                                <span>{addingItem ? 'Adding...' : 'Add Item'}</span>
+                                                <span>{addingItem ? t('dashboard.addingItemBtn') : t('dashboard.addItemBtn')}</span>
                                             </button>
                                         </div>
                                     </form>
@@ -1233,14 +1241,14 @@ function RoomContent() {
                                 {/* Dislikes / Allergies */}
                                 <div className="pt-4 border-t border-[#E7E5E0]">
                                     <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                                        Allergies or Things to Avoid
+                                        {t('dashboard.allergiesTitle')}
                                     </label>
                                     <textarea
                                         rows={2}
                                         value={dislikesDraft}
                                         onChange={(e) => setDislikesDraft(e.target.value)}
                                         onBlur={handleSaveDislikes}
-                                        placeholder="e.g., Nut allergy, no scented candles..."
+                                        placeholder={t('dashboard.myAllergiesPlaceholder')}
                                         className="w-full px-4 py-3 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm outline-none focus:bg-white focus:border-[#1B4332] resize-none"
                                     />
                                 </div>
@@ -1270,13 +1278,13 @@ function RoomContent() {
                                 <div>
                                     <span className="text-[11px] font-bold uppercase tracking-wider text-[#8C6D46]">
                                         {modalTarget.isClaimed
-                                            ? 'Locked Profile'
-                                            : 'Claim Your Spot'}
+                                            ? t('pinModal.lockedProfile')
+                                            : t('pinModal.claimYourSpot')}
                                     </span>
                                     <h3 className="text-xl font-bold text-[#1C1917]">
                                         {modalTarget.isClaimed
-                                            ? `Welcome back, ${modalTarget.name}`
-                                            : `Are you ${modalTarget.name}?`}
+                                            ? t('pinModal.welcomeBack', { name: modalTarget.name })
+                                            : t('pinModal.areYou', { name: modalTarget.name })}
                                     </h3>
                                 </div>
                             </div>
@@ -1292,8 +1300,8 @@ function RoomContent() {
 
                         <p className="text-sm text-[#57534E] mb-6">
                             {modalTarget.isClaimed
-                                ? 'Enter your 4-digit PIN to unlock your Secret Santa match and edit your wishlist.'
-                                : 'Create a quick 4-digit PIN so nobody else in the group chat can peek at who you drew.'}
+                                ? t('pinModal.claimedDesc')
+                                : t('pinModal.unclaimedDesc')}
                         </p>
 
                         <div className="mb-5">
@@ -1311,13 +1319,13 @@ function RoomContent() {
                         {!modalTarget.isClaimed && (
                             <div className="mb-5">
                                 <label className="block text-xs font-semibold text-[#57534E] mb-1">
-                                    Optional PIN Reminder (e.g., “Birth year”)
+                                    {t('pinModal.pinHintLabel')}
                                 </label>
                                 <input
                                     type="text"
                                     value={pinHintInput}
                                     onChange={(e) => setPinHintInput(e.target.value)}
-                                    placeholder="Optional hint in case you forget..."
+                                    placeholder={t('pinModal.pinHintPlaceholder')}
                                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
                                 />
                             </div>
@@ -1326,7 +1334,7 @@ function RoomContent() {
                         {modalTarget.isClaimed && modalTarget.pinHint && (
                             <div className="mb-5 flex items-center justify-center gap-1.5 text-xs text-[#78716C] bg-[#FAF9F6] py-2 px-3 rounded-xl border border-[#E7E5E0]">
                                 <Info className="w-3.5 h-3.5 text-[#D4A373]" />
-                                <span>Your hint: “{modalTarget.pinHint}”</span>
+                                <span>{t('pinModal.yourHint', { hint: modalTarget.pinHint })}</span>
                             </div>
                         )}
 
@@ -1348,10 +1356,10 @@ function RoomContent() {
                             <Lock className="w-4 h-4" />
                             <span>
                                 {verifyingPin
-                                    ? 'Checking...'
+                                    ? t('pinModal.checkingPin')
                                     : modalTarget.isClaimed
-                                        ? 'Unlock My Match'
-                                        : 'Set PIN & See My Match'}
+                                        ? t('pinModal.unlockMatch')
+                                        : t('pinModal.setPinAndSee')}
                             </span>
                         </button>
                     </div>
@@ -1377,10 +1385,10 @@ function RoomContent() {
                                 </div>
                                 <div>
                                     <span className="text-[11px] font-bold uppercase tracking-wider text-[#8C6D46]">
-                                        Gift Exchange
+                                        {t('addPersonModal.giftExchangeBadge')}
                                     </span>
                                     <h3 className="text-xl font-bold text-[#1C1917]">
-                                        Add a Person
+                                        {t('addPersonModal.modalTitle')}
                                     </h3>
                                 </div>
                             </div>
@@ -1396,7 +1404,7 @@ function RoomContent() {
                         </div>
 
                         <p className="text-sm text-[#57534E] mb-5">
-                            Add someone who was missed. They will be seamlessly integrated into the Secret Santa circle.
+                            {t('addPersonModal.modalDesc')}
                         </p>
 
                         <form
@@ -1405,7 +1413,7 @@ function RoomContent() {
                         >
                             <div>
                                 <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                                    Person&apos;s Name
+                                    {t('addPersonModal.personNameLabel')}
                                 </label>
                                 <input
                                     type="text"
@@ -1415,25 +1423,25 @@ function RoomContent() {
                                         if (addError) setAddError('');
                                     }}
                                     autoFocus
-                                    placeholder="e.g., Grandma, Taylor, Alex M."
+                                    placeholder={t('addPersonModal.personNamePlaceholder')}
                                     className="w-full px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm"
                                 />
                             </div>
 
                             <div>
                                 <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5 flex items-center justify-between">
-                                    <span>Prevent Drawing (Optional)</span>
-                                    <span className="text-[11px] font-normal text-[#78716C]">e.g. spouse / partner</span>
+                                    <span>{t('addPersonModal.preventDrawingLabel')}</span>
+                                    <span className="text-[11px] font-normal text-[#78716C]">{t('addPersonModal.preventDrawingHint')}</span>
                                 </label>
                                 <select
                                     value={addExclusionInput}
                                     onChange={(e) => setAddExclusionInput(e.target.value)}
                                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
                                 >
-                                    <option value="">No exclusion (can draw anyone)</option>
+                                    <option value="">{t('addPersonModal.noExclusionOpt')}</option>
                                     {participants.map((p) => (
                                         <option key={p.id} value={p.id}>
-                                            Cannot draw {p.name}
+                                            {t('addPersonModal.cannotDrawOpt', { name: p.name })}
                                         </option>
                                     ))}
                                 </select>
@@ -1442,7 +1450,7 @@ function RoomContent() {
                             <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] text-xs text-[#57534E] flex items-start gap-2.5">
                                 <Sparkles className="w-4 h-4 text-[#D4A373] shrink-0 mt-0.5" />
                                 <span>
-                                    Secret Santa matches update safely. Anyone who already opened their envelope keeps their recipient!
+                                    {t('addPersonModal.safeNotice')}
                                 </span>
                             </div>
 
@@ -1459,7 +1467,7 @@ function RoomContent() {
                                     onClick={() => setIsAddModalOpen(false)}
                                     className="flex-1 py-3 px-4 rounded-xl font-semibold text-sm bg-[#FAF9F6] hover:bg-[#F2EFE9] text-[#57534E] border border-[#E7E5E0] transition cursor-pointer"
                                 >
-                                    Cancel
+                                    {t('addPersonModal.cancelBtn')}
                                 </button>
                                 <button
                                     type="submit"
@@ -1469,12 +1477,12 @@ function RoomContent() {
                                     {isAdding ? (
                                         <>
                                             <Loader2 className="w-4 h-4 animate-spin" />
-                                            <span>Adding...</span>
+                                            <span>{t('addPersonModal.addingBtn')}</span>
                                         </>
                                     ) : (
                                         <>
                                             <Plus className="w-4 h-4" />
-                                            <span>Add to Room</span>
+                                            <span>{t('addPersonModal.addToRoomBtn')}</span>
                                         </>
                                     )}
                                 </button>
