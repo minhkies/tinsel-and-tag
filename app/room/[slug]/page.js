@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 import {
@@ -11,7 +11,6 @@ import {
     Copy,
     Check,
     Plus,
-    Trash2,
     Shuffle,
     Sparkles,
     Calendar,
@@ -21,8 +20,6 @@ import {
     EyeOff,
     Heart,
     Ban,
-    ChevronDown,
-    ChevronUp,
     UserCheck,
     KeyRound,
     Info,
@@ -56,6 +53,7 @@ import {
 } from '@dnd-kit/sortable';
 import PinInput from '@/components/PinInput';
 import WishlistItemRow from '@/components/WishlistItemRow';
+import AddPersonModal from '@/components/AddPersonModal';
 import { useLanguage, LanguageToggle } from '@/lib/LanguageContext';
 import {
     getRoomLobby,
@@ -68,21 +66,11 @@ import {
     reorderWishlistItems,
     updateDislikes,
     lockParticipantSession,
-    verifyOrganizerPin,
-    organizerResetPin,
     addParticipantToRoom,
     generatePasskeyRegistrationOptions,
     verifyPasskeyRegistration,
     generatePasskeyAuthenticationOptions,
     verifyPasskeyAuthentication,
-    removeParticipant,
-    getRoomExclusions,
-    addExclusionRule,
-    removeExclusionRule,
-    drawNames,
-    redrawNames,
-    claimOrganizer,
-    unlinkOrganizerParticipant,
 } from '@/app/actions';
 
 const AVATAR_PALETTES = [
@@ -114,6 +102,7 @@ function getDomainLabel(url) {
 
 function RoomContent() {
     const params = useParams();
+    const router = useRouter();
     const slug = params?.slug;
     const { t, language } = useLanguage();
 
@@ -150,16 +139,12 @@ function RoomContent() {
         }
         return '';
     });
-    const [showOrganizerDrawer, setShowOrganizerDrawer] = useState(false);
 
-    // Add Person Modal & quick add state
+    // Organizer status — gates the organizer-only "Add Person" shortcuts
+    const [activeOrganizer, setActiveOrganizer] = useState(false);
+
+    // Add Person Modal state
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-    const [addNameInput, setAddNameInput] = useState('');
-    const [addExclusionInput, setAddExclusionInput] = useState('');
-    const [addError, setAddError] = useState('');
-    const [isAdding, setIsAdding] = useState(false);
-    const [quickAddName, setQuickAddName] = useState('');
-    const [isQuickAdding, setIsQuickAdding] = useState(false);
 
     // PIN Modal state
     const [modalTarget, setModalTarget] = useState(null);
@@ -187,46 +172,11 @@ function RoomContent() {
     const [copiedLink, setCopiedLink] = useState(false);
     const [toastMessage, setToastMessage] = useState('');
 
-    // Organizer PIN modal state
-    const [isOrganizerPinModalOpen, setIsOrganizerPinModalOpen] = useState(false);
-    const [organizerPinBuffer, setOrganizerPinBuffer] = useState('');
-    const [organizerPinError, setOrganizerPinError] = useState('');
-    const [verifyingOrganizerPin, setVerifyingOrganizerPin] = useState(false);
-
     // Passkey (WebAuthn) state
     const [passkeySupported, setPasskeySupported] = useState(false);
     const [showPasskeyPrompt, setShowPasskeyPrompt] = useState(false);
     const [enablingPasskey, setEnablingPasskey] = useState(false);
     const [unlockingWithPasskey, setUnlockingWithPasskey] = useState(false);
-
-    // Remove participant modal state
-    const [removeTarget, setRemoveTarget] = useState(null);
-    const [removeMode, setRemoveMode] = useState('rebridge');
-    const [removingParticipant, setRemovingParticipant] = useState(false);
-    const [removeError, setRemoveError] = useState('');
-
-    // Exclusion rules (organizer drawer) state
-    const [exclusionPairs, setExclusionPairs] = useState([]);
-    const [exclusionA, setExclusionA] = useState('');
-    const [exclusionB, setExclusionB] = useState('');
-    const [savingExclusion, setSavingExclusion] = useState(false);
-    const [exclusionError, setExclusionError] = useState('');
-
-    // Draw names (organizer drawer) state
-    const [drawingNames, setDrawingNames] = useState(false);
-    const [drawError, setDrawError] = useState('');
-    const [redrawingNames, setRedrawingNames] = useState(false);
-    const [redrawError, setRedrawError] = useState('');
-    const [confirmingRedraw, setConfirmingRedraw] = useState(false);
-
-    // Organizer identity state
-    const [organizerInfo, setOrganizerInfo] = useState(null); // { claimed, name, participantId } | null
-    const [activeOrganizer, setActiveOrganizer] = useState(false);
-    const [organizerClaimMode, setOrganizerClaimMode] = useState(false);
-    const [organizerNameInput, setOrganizerNameInput] = useState('');
-    const [organizerClaimPinBuffer, setOrganizerClaimPinBuffer] = useState('');
-    const [organizerLinkParticipantId, setOrganizerLinkParticipantId] = useState('');
-    const [claimingOrganizer, setClaimingOrganizer] = useState(false);
 
     // Detect WebAuthn support once on mount. Hides all biometric UI in
     // unsupported browsers (e.g., Instagram/Messenger in-app webviews).
@@ -263,7 +213,6 @@ function RoomContent() {
 
         setRoom(lobbyRes.room);
         setParticipants(lobbyRes.participants);
-        setOrganizerInfo(lobbyRes.organizer || null);
         setActiveOrganizer(Boolean(lobbyRes.activeOrganizer));
 
         const currentView = viewRef.current;
@@ -302,9 +251,10 @@ function RoomContent() {
             const queryAdmin = urlParams.get('admin');
             if (queryAdmin) {
                 localStorage.setItem(`ss_admin_${slug}`, queryAdmin);
-                // Strip the admin parameter from the visible URL bar for safety
-                const cleanUrl = window.location.pathname;
-                window.history.replaceState({}, '', cleanUrl);
+                // Old-style organizer links (?admin= on the room page) now
+                // live on their own page — send organizers straight there.
+                router.replace(`/admin/${slug}`);
+                return;
             }
         }
 
@@ -327,7 +277,7 @@ function RoomContent() {
             clearInterval(intervalId);
             document.removeEventListener('visibilitychange', handleVisibilityChange);
         };
-    }, [slug, loadRoomData]);
+    }, [slug, loadRoomData, router]);
 
     const formatDate = (isoDate) => {
         if (!isoDate) return t('common.tbd');
@@ -354,62 +304,20 @@ function RoomContent() {
         setTimeout(() => setCopiedLink(false), 2500);
     };
 
-    const handleCopyOrganizerLink = () => {
-        if (typeof window !== 'undefined' && adminToken) {
-            const organizerUrl = `${window.location.origin}/room/${slug}?admin=${adminToken}`;
-            navigator.clipboard?.writeText(organizerUrl).catch(() => { });
-            showToast(t('room.organizerLinkToast'));
-        }
-    };
-
-    const handleAddParticipant = async (e) => {
-        if (e) e.preventDefault();
-        const trimmed = addNameInput.trim();
-        if (!trimmed || isAdding) return;
-
-        setIsAdding(true);
-        setAddError('');
-
+    // Adds a person via the shared AddPersonModal (returns { error } on failure)
+    const handleAddPerson = async (name, exclusionParticipantId) => {
         const res = await addParticipantToRoom({
             slug,
-            name: trimmed,
-            exclusionParticipantId: addExclusionInput || null,
+            name,
+            exclusionParticipantId,
         });
-
-        setIsAdding(false);
-
         if (res.error) {
-            setAddError(res.error);
-            return;
+            return res;
         }
 
-        showToast(res.notice || `Added ${trimmed} to the room!`);
-        setIsAddModalOpen(false);
-        setAddNameInput('');
-        setAddExclusionInput('');
+        showToast(res.notice || `Added ${name} to the room!`);
         await loadRoomData();
-    };
-
-    const handleQuickAdd = async (e) => {
-        e.preventDefault();
-        const trimmed = quickAddName.trim();
-        if (!trimmed || isQuickAdding) return;
-
-        setIsQuickAdding(true);
-        const res = await addParticipantToRoom({
-            slug,
-            name: trimmed,
-        });
-        setIsQuickAdding(false);
-
-        if (res.error) {
-            showToast(res.error);
-            return;
-        }
-
-        showToast(res.notice || `Added ${trimmed} to the room!`);
-        setQuickAddName('');
-        await loadRoomData();
+        return {};
     };
 
     // ==========================================================================
@@ -769,248 +677,6 @@ function RoomContent() {
     };
 
     // ==========================================================================
-    // ORGANIZER UNLOCK / CLAIM
-    // ==========================================================================
-    const handleOrganizerControlsClick = () => {
-        if (activeOrganizer) {
-            const willOpen = !showOrganizerDrawer;
-            setShowOrganizerDrawer(!showOrganizerDrawer);
-            if (willOpen) loadExclusions();
-        } else {
-            setOrganizerPinBuffer('');
-            setOrganizerPinError('');
-            setOrganizerClaimMode(!organizerInfo?.claimed);
-            setIsOrganizerPinModalOpen(true);
-        }
-    };
-
-    const handleOrganizerPinSubmit = async (submittedPin = organizerPinBuffer) => {
-        if (submittedPin.length !== 4 || verifyingOrganizerPin) return;
-        setVerifyingOrganizerPin(true);
-        setOrganizerPinError('');
-
-        try {
-            const result = await verifyOrganizerPin({ slug, pin: submittedPin });
-            if (result.error) {
-                if (result.error === 'ORGANIZER_UNCLAIMED') {
-                    setOrganizerClaimMode(true);
-                    setOrganizerPinBuffer('');
-                } else {
-                    setOrganizerPinError(result.error);
-                    setOrganizerPinBuffer('');
-                }
-            } else {
-                setActiveOrganizer(true);
-                setOrganizerInfo({ claimed: true, ...result.organizer });
-                setIsOrganizerPinModalOpen(false);
-                setShowOrganizerDrawer(true);
-                loadExclusions();
-            }
-        } catch {
-            setOrganizerPinError('Something went wrong.');
-            setOrganizerPinBuffer('');
-        }
-        setVerifyingOrganizerPin(false);
-    };
-
-    const handleClaimOrganizer = async () => {
-        if (claimingOrganizer) return;
-
-        if (!organizerNameInput.trim()) {
-            setOrganizerPinError(t('organizerModal.nameRequired'));
-            return;
-        }
-        if (organizerClaimPinBuffer.length !== 4) {
-            setOrganizerPinError(t('organizerModal.pinRequired'));
-            return;
-        }
-
-        setClaimingOrganizer(true);
-        setOrganizerPinError('');
-
-        const res = await claimOrganizer({
-            slug,
-            name: organizerNameInput,
-            pin: organizerClaimPinBuffer,
-            participantId: organizerLinkParticipantId || null,
-            adminToken,
-        });
-
-        setClaimingOrganizer(false);
-
-        if (res.error) {
-            setOrganizerPinError(res.error);
-            return;
-        }
-
-        setActiveOrganizer(true);
-        setOrganizerInfo({ claimed: true, ...res.organizer });
-        setIsOrganizerPinModalOpen(false);
-        setShowOrganizerDrawer(true);
-        loadExclusions();
-    };
-
-    const handleUnlinkOrganizer = async () => {
-        const res = await unlinkOrganizerParticipant({ slug });
-        if (res.error) {
-            showToast(res.error);
-            return;
-        }
-        showToast(t('organizerModal.unlinkToast'));
-        await loadRoomData();
-    };
-
-    const handleResetPin = async (participantId, personName) => {
-        const isCurrentActive =
-            activeParticipantId === participantId || dashboard?.me?.id === participantId;
-
-        const res = await organizerResetPin({
-            slug,
-            participantId,
-        });
-        if (res.error) {
-            showToast(res.error);
-            return;
-        }
-
-        if (isCurrentActive) {
-            await lockParticipantSession(slug);
-            setActiveParticipantId(null);
-            setDashboard(null);
-            setIsCardRevealed(false);
-            setView('lobby');
-            showToast(t('room.pinResetNotice'));
-        } else {
-            showToast(`Reset PIN for ${personName}.`);
-        }
-        await loadRoomData();
-    };
-
-    const handleConfirmRemove = async () => {
-        if (!removeTarget || removingParticipant) return;
-
-        setRemovingParticipant(true);
-        setRemoveError('');
-
-        const res = await removeParticipant({
-            slug,
-            participantId: removeTarget.id,
-            mode: removeMode,
-        });
-
-        setRemovingParticipant(false);
-
-        if (res.error) {
-            setRemoveError(res.error);
-            return;
-        }
-
-        const removedName = removeTarget.name;
-        setRemoveTarget(null);
-        setRemoveMode('rebridge');
-
-        if (res.mode === 'redraw') {
-            showToast(t('removePersonModal.removedRedrawToast', { name: removedName }));
-        } else if (res.mode === 'none') {
-            showToast(t('removePersonModal.removedSimpleToast', { name: removedName }));
-        } else {
-            showToast(t('removePersonModal.removedRebridgeToast', { name: removedName }));
-        }
-        await loadRoomData();
-        await loadExclusions();
-    };
-
-    // ==========================================================================
-    // EXCLUSION RULES (ORGANIZER)
-    // ==========================================================================
-    const loadExclusions = async () => {
-        const res = await getRoomExclusions({ slug });
-        if (!res.error) {
-            setExclusionPairs(res.pairs || []);
-        }
-    };
-
-    const handleAddExclusion = async () => {
-        if (!exclusionA || !exclusionB || exclusionA === exclusionB || savingExclusion) return;
-
-        setSavingExclusion(true);
-        setExclusionError('');
-
-        const res = await addExclusionRule({
-            slug,
-            participantIdA: exclusionA,
-            participantIdB: exclusionB,
-        });
-
-        setSavingExclusion(false);
-
-        if (res.error) {
-            setExclusionError(res.error);
-            return;
-        }
-
-        showToast(res.notice || t('room.exclusionAddedToast'));
-        setExclusionA('');
-        setExclusionB('');
-        setExclusionError('');
-        await loadExclusions();
-        await loadRoomData();
-    };
-
-    const handleRemoveExclusion = async (idA, idB) => {
-        const res = await removeExclusionRule({
-            slug,
-            participantIdA: idA,
-            participantIdB: idB,
-        });
-        if (res.error) {
-            showToast(res.error);
-            return;
-        }
-        showToast(res.notice || t('room.exclusionRemovedToast'));
-        await loadExclusions();
-    };
-
-    const handleDrawNames = async () => {
-        if (drawingNames) return;
-
-        setDrawingNames(true);
-        setDrawError('');
-
-        const res = await drawNames({ slug });
-
-        setDrawingNames(false);
-
-        if (res.error) {
-            setDrawError(res.error);
-            return;
-        }
-
-        showToast(res.notice || t('room.drawNamesToast'));
-        await loadRoomData();
-    };
-
-    const handleRedrawNames = async () => {
-        if (redrawingNames) return;
-
-        setRedrawingNames(true);
-        setRedrawError('');
-
-        const res = await redrawNames({ slug });
-
-        setRedrawingNames(false);
-
-        if (res.error) {
-            setRedrawError(res.error);
-            return;
-        }
-
-        setConfirmingRedraw(false);
-        showToast(res.notice || t('room.redrawNamesToast'));
-        await loadRoomData();
-    };
-
-    // ==========================================================================
     // RENDER STATES
     // ==========================================================================
     if (loading) {
@@ -1092,7 +758,7 @@ function RoomContent() {
         ================================================================== */}
                 {view === 'lobby' && (
                     <div className="space-y-6">
-                        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#E7E5E0] shadow-xs">
+                        <div className="bg-white rounded-3xl p-4 sm:p-8 border border-[#E7E5E0] shadow-xs">
                             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                                 <div>
                                     <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -1146,7 +812,7 @@ function RoomContent() {
                                 </button>
                             </div>
 
-                            {/* Progress + Organizer Controls */}
+                            {/* Progress + Organizer link */}
                             <div className="mt-6 pt-5 border-t border-[#E7E5E0] flex flex-wrap items-center justify-between gap-3">
                                 <div className="flex items-center gap-3">
                                     <span className="text-xs font-semibold text-[#57534E]">
@@ -1162,373 +828,15 @@ function RoomContent() {
                                     </div>
                                 </div>
 
-                                    <button
-                                        type="button"
-                                        onClick={handleOrganizerControlsClick}
+                                    <Link
+                                        href={`/admin/${slug}`}
                                         className="text-xs font-semibold text-[#8C6D46] hover:text-[#1C1917] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#D4A373]/15 transition cursor-pointer"
                                     >
                                         <KeyRound className="w-3.5 h-3.5" />
                                         <span>{t('room.organizerControls')}</span>
-                                        {showOrganizerDrawer ? (
-                                            <ChevronUp className="w-3.5 h-3.5" />
-                                        ) : (
-                                            <ChevronDown className="w-3.5 h-3.5" />
-                                        )}
-                                    </button>
+                                        <ExternalLink className="w-3 h-3 opacity-60" />
+                                    </Link>
                             </div>
-
-                            {showOrganizerDrawer && activeOrganizer && (
-                                <div className="mt-4 p-5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] space-y-4">
-                                    {/* Organizer identity */}
-                                    <div className="flex items-center justify-between gap-2">
-                                        <span className="text-xs font-semibold text-[#57534E] flex items-center gap-1.5 min-w-0">
-                                            <KeyRound className="w-3.5 h-3.5 text-[#8C6D46] shrink-0" />
-                                            <span className="truncate">
-                                                {t('organizerModal.drawerBadge', {
-                                                    name: organizerInfo?.name || '',
-                                                })}
-                                            </span>
-                                        </span>
-                                        {organizerInfo?.participantId && (
-                                            <button
-                                                type="button"
-                                                onClick={handleUnlinkOrganizer}
-                                                className="text-[11px] font-semibold text-[#C84B31] hover:underline cursor-pointer shrink-0"
-                                            >
-                                                {t('organizerModal.unlinkBtn')}
-                                            </button>
-                                        )}
-                                    </div>
-
-                                    {/* Draw Names (undrawn) / Re-draw Names (drawn) */}
-                                    {room.isDrawn ? (
-                                        <div className="p-4 rounded-2xl bg-[#C84B31]/5 border border-[#C84B31]/20 space-y-3">
-                                            <div className="flex items-center gap-2">
-                                                <Shuffle className="w-4 h-4 text-[#C84B31]" />
-                                                <span className="text-sm font-bold text-[#1C1917]">
-                                                    {t('room.redrawNamesTitle')}
-                                                </span>
-                                            </div>
-                                            <p className="text-xs text-[#57534E]">
-                                                {t('room.redrawNamesDesc')}
-                                            </p>
-                                            {confirmingRedraw ? (
-                                                <div className="flex gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            setConfirmingRedraw(false);
-                                                            setRedrawError('');
-                                                        }}
-                                                        disabled={redrawingNames}
-                                                        className="flex-1 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-[#57534E] text-sm font-semibold transition cursor-pointer"
-                                                    >
-                                                        {t('common.cancel')}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={handleRedrawNames}
-                                                        disabled={participants.length < 2 || redrawingNames}
-                                                        className="flex-1 py-2.5 rounded-xl bg-[#C84B31] hover:bg-[#9E3B24] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:cursor-not-allowed"
-                                                    >
-                                                        {redrawingNames ? (
-                                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                                        ) : (
-                                                            <Shuffle className="w-4 h-4" />
-                                                        )}
-                                                        <span>
-                                                            {redrawingNames
-                                                                ? t('room.redrawingNames')
-                                                                : t('room.confirmRedrawBtn')}
-                                                        </span>
-                                                    </button>
-                                                </div>
-                                            ) : (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setConfirmingRedraw(true);
-                                                        setRedrawError('');
-                                                    }}
-                                                    disabled={participants.length < 2 || redrawingNames}
-                                                    className="w-full py-2.5 rounded-xl bg-[#C84B31] hover:bg-[#9E3B24] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:cursor-not-allowed"
-                                                >
-                                                    <Shuffle className="w-4 h-4" />
-                                                    <span>{t('room.redrawNamesBtn')}</span>
-                                                </button>
-                                            )}
-                                            {participants.length < 2 && (
-                                                <p className="text-[11px] text-[#A8A29E]">
-                                                    {t('room.drawNamesMinPeople')}
-                                                </p>
-                                            )}
-                                            {redrawError && (
-                                                <p className="text-xs font-semibold text-[#C84B31]">
-                                                    {redrawError}
-                                                </p>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <div className="p-4 rounded-2xl bg-[#1B4332]/5 border border-[#1B4332]/20 space-y-3">
-                                            <div className="flex items-center gap-2">
-                                                <Shuffle className="w-4 h-4 text-[#1B4332]" />
-                                                <span className="text-sm font-bold text-[#1C1917]">
-                                                    {t('room.drawNamesTitle')}
-                                                </span>
-                                            </div>
-                                            <p className="text-xs text-[#57534E]">
-                                                {t('room.drawNamesDesc')}
-                                            </p>
-                                            <button
-                                                type="button"
-                                                onClick={handleDrawNames}
-                                                disabled={participants.length < 2 || drawingNames}
-                                                className="w-full py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:cursor-not-allowed"
-                                            >
-                                                {drawingNames ? (
-                                                    <Loader2 className="w-4 h-4 animate-spin text-[#D4A373]" />
-                                                ) : (
-                                                    <Shuffle className="w-4 h-4 text-[#D4A373]" />
-                                                )}
-                                                <span>
-                                                    {drawingNames
-                                                        ? t('room.drawingNames')
-                                                        : t('room.drawNamesBtn')}
-                                                </span>
-                                            </button>
-                                            {participants.length < 2 && (
-                                                <p className="text-[11px] text-[#A8A29E]">
-                                                    {t('room.drawNamesMinPeople')}
-                                                </p>
-                                            )}
-                                            {drawError && (
-                                                <p className="text-xs font-semibold text-[#C84B31]">
-                                                    {drawError}
-                                                </p>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    {/* Quick Add Person */}
-                                    <div>
-                                        <div className="flex items-center justify-between mb-2">
-                                            <span className="text-xs font-bold uppercase tracking-wider text-[#57534E]">
-                                                {t('room.addPersonToRoom')}
-                                            </span>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    setIsAddModalOpen(true);
-                                                    setAddNameInput('');
-                                                    setAddExclusionInput('');
-                                                    setAddError('');
-                                                }}
-                                                className="text-xs text-[#8C6D46] hover:underline flex items-center gap-1 cursor-pointer"
-                                            >
-                                                <span>{t('room.customExclusions')}</span>
-                                                <ChevronDown className="w-3 h-3 -rotate-90" />
-                                            </button>
-                                        </div>
-                                        <form onSubmit={handleQuickAdd} className="flex flex-col sm:flex-row gap-2">
-                                            <input
-                                                type="text"
-                                                value={quickAddName}
-                                                onChange={(e) => setQuickAddName(e.target.value)}
-                                                placeholder={t('room.newParticipantPlaceholder')}
-                                                className="w-full sm:flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
-                                            />
-                                            <button
-                                                type="submit"
-                                                disabled={!quickAddName.trim() || isQuickAdding}
-                                                className="w-full sm:w-auto justify-center px-4 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shrink-0"
-                                            >
-                                                {isQuickAdding ? (
-                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                ) : (
-                                                    <Plus className="w-3.5 h-3.5" />
-                                                )}
-                                                <span>{t('common.add')}</span>
-                                            </button>
-                                        </form>
-                                    </div>
-
-                                    {/* PIN Resets */}
-                                    <div className="pt-3 border-t border-[#E7E5E0]">
-                                        <span className="text-xs font-bold uppercase tracking-wider text-[#57534E] block mb-2">
-                                            {t('room.resetPinsTitle')}
-                                        </span>
-                                        <div className="divide-y divide-[#E7E5E0] max-h-48 overflow-y-auto pr-1">
-                                            {participants.map((p) => (
-                                                <div
-                                                    key={p.id}
-                                                    className="py-2 flex items-center justify-between text-sm"
-                                                >
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="font-medium text-[#1C1917]">
-                                                            {p.name}
-                                                        </span>
-                                                        {p.isClaimed ? (
-                                                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#1B4332]/10 text-[#1B4332] font-medium">
-                                                                {t('room.pinSetBadge')} {p.pinHint ? `(${p.pinHint})` : ''}
-                                                                {p.hasRevealed ? ` • ${t('room.openedBadge')}` : ''}
-                                                            </span>
-                                                        ) : (
-                                                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#E7E5E0]/70 text-[#78716C]">
-                                                                {t('room.unclaimedBadge')}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex items-center gap-3 shrink-0">
-                                                        {p.isClaimed && (
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleResetPin(p.id, p.name)}
-                                                                className="text-xs font-semibold text-[#C84B31] hover:underline cursor-pointer"
-                                                            >
-                                                                {t('room.resetPinBtn')}
-                                                            </button>
-                                                        )}
-                                                        {p.id !== activeParticipantId &&
-                                                            p.id !== organizerInfo?.participantId && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => {
-                                                                        setRemoveTarget(p);
-                                                                        setRemoveMode('rebridge');
-                                                                        setRemoveError('');
-                                                                    }}
-                                                                    disabled={participants.length <= 3}
-                                                                    title={
-                                                                        participants.length <= 3
-                                                                            ? t('room.minParticipantsTooltip')
-                                                                            : t('room.removeParticipantBtn')
-                                                                    }
-                                                                    aria-label={t('room.removeParticipantBtn')}
-                                                                    className="p-1.5 rounded-lg text-[#A8A29E] hover:text-[#C84B31] hover:bg-[#FDF2F0] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#A8A29E]"
-                                                                >
-                                                                    <Trash2 className="w-4 h-4" />
-                                                                </button>
-                                                            )}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    {/* Exclusion Rules */}
-                                    <div className="pt-3 border-t border-[#E7E5E0]">
-                                        <span className="text-xs font-bold uppercase tracking-wider text-[#57534E] block mb-2">
-                                            {t('room.exclusionRulesTitle')}
-                                        </span>
-
-                                        {room.isDrawn && (
-                                            <p className="text-[11px] text-[#A8A29E] mb-3 flex items-center gap-1">
-                                                <Shuffle className="w-3 h-3" />
-                                                <span>{t('room.exclusionsApplyOnRedraw')}</span>
-                                            </p>
-                                        )}
-
-                                        {exclusionPairs.length > 0 ? (
-                                            <div className="flex flex-wrap gap-2 mb-3">
-                                                {exclusionPairs.map((pair) => (
-                                                    <span
-                                                        key={`${pair.idA}-${pair.idB}`}
-                                                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#FDF2F0] border border-[#F5D0C8] text-[#9E3B24] text-xs font-medium"
-                                                    >
-                                                        <span>
-                                                            {pair.nameA} ↔ {pair.nameB}
-                                                        </span>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleRemoveExclusion(pair.idA, pair.idB)}
-                                                            title={t('room.removeExclusionBtn')}
-                                                            aria-label={t('room.removeExclusionBtn')}
-                                                            className="hover:text-[#1C1917] cursor-pointer"
-                                                        >
-                                                            <X className="w-3.5 h-3.5" />
-                                                        </button>
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        ) : (
-                                            <p className="text-xs text-[#A8A29E] mb-3">
-                                                {t('room.noExclusions')}
-                                            </p>
-                                        )}
-
-                                        <div className="flex flex-col gap-2">
-                                            <div className="flex items-center gap-2">
-                                                    <select
-                                                        value={exclusionA}
-                                                        onChange={(e) => {
-                                                            setExclusionA(e.target.value);
-                                                            if (exclusionError) setExclusionError('');
-                                                        }}
-                                                        className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm font-medium text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
-                                                    >
-                                                        <option value="">{t('room.selectPerson')}</option>
-                                                        {participants.map((p) => (
-                                                            <option key={p.id} value={p.id}>
-                                                                {p.name}
-                                                            </option>
-                                                        ))}
-                                                    </select>
-                                                    <span className="text-xs font-semibold text-[#78716C] shrink-0">
-                                                        {t('onboarding.cannotDraw')}
-                                                    </span>
-                                                    <select
-                                                        value={exclusionB}
-                                                        onChange={(e) => {
-                                                            setExclusionB(e.target.value);
-                                                            if (exclusionError) setExclusionError('');
-                                                        }}
-                                                        className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm font-medium text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
-                                                    >
-                                                        <option value="">{t('room.selectPerson')}</option>
-                                                        {participants.map((p) => (
-                                                            <option key={p.id} value={p.id}>
-                                                                {p.name}
-                                                            </option>
-                                                        ))}
-                                                    </select>
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={handleAddExclusion}
-                                                    disabled={
-                                                        !exclusionA || !exclusionB || exclusionA === exclusionB || savingExclusion
-                                                    }
-                                                    className="w-full px-4 py-2.5 rounded-xl border border-[#E7E5E0] bg-[#FAF9F6] hover:bg-[#F2EFE9] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-sm font-semibold text-[#1C1917] transition cursor-pointer disabled:cursor-not-allowed"
-                                                >
-                                                    {savingExclusion
-                                                        ? t('room.savingExclusion')
-                                                        : t('onboarding.blockPairBtn')}
-                                                </button>
-                                            </div>
-
-                                        {exclusionError && (
-                                            <p className="text-xs font-semibold text-[#C84B31] mt-2">
-                                                {exclusionError}
-                                            </p>
-                                        )}
-                                    </div>
-
-                                    {/* Secret Organizer Link */}
-                                    <div className="pt-3 border-t border-[#E7E5E0] flex items-center justify-between">
-                                        <span className="text-xs text-[#78716C]">
-                                            {t('room.saveOrganizerLink')}
-                                        </span>
-                                        <button
-                                            type="button"
-                                            onClick={handleCopyOrganizerLink}
-                                            className="text-xs font-semibold text-[#8C6D46] hover:underline flex items-center gap-1 cursor-pointer"
-                                        >
-                                            <Copy className="w-3 h-3" />
-                                            <span>{t('room.copyOrganizerLink')}</span>
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
                         {/* Participant Cards */}
@@ -1546,12 +854,7 @@ function RoomContent() {
                                     {activeOrganizer && (
                                         <button
                                             type="button"
-                                            onClick={() => {
-                                                setIsAddModalOpen(true);
-                                                setAddNameInput('');
-                                                setAddExclusionInput('');
-                                                setAddError('');
-                                            }}
+                                            onClick={() => setIsAddModalOpen(true)}
                                             className="text-xs font-semibold text-[#1B4332] hover:text-[#143326] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1B4332]/10 hover:bg-[#1B4332]/15 transition cursor-pointer"
                                         >
                                             <Plus className="w-3.5 h-3.5" />
@@ -1627,12 +930,7 @@ function RoomContent() {
                                 {activeOrganizer && (
                                     <button
                                         type="button"
-                                        onClick={() => {
-                                            setIsAddModalOpen(true);
-                                            setAddNameInput('');
-                                            setAddExclusionInput('');
-                                            setAddError('');
-                                        }}
+                                        onClick={() => setIsAddModalOpen(true)}
                                         className="p-4 rounded-2xl border-2 border-dashed border-[#E7E5E0] hover:border-[#1B4332] bg-[#FAF9F6]/50 hover:bg-white text-left transition flex items-center justify-between group cursor-pointer"
                                     >
                                         <div className="flex items-center gap-3.5">
@@ -2249,465 +1547,14 @@ function RoomContent() {
                 </div>
             )}
 
-            {/* ====================================================================
-          ADD PERSON MODAL
-      ==================================================================== */}
+            {/* Add Person Modal — organizer only */}
             {isAddModalOpen && (
-                <div
-                    className="fixed inset-0 z-40 bg-[#1C1917]/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
-                    onClick={() => !isAdding && setIsAddModalOpen(false)}
-                >
-                    <div
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 border border-[#E7E5E0] shadow-2xl"
-                    >
-                        <div className="flex items-start justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-11 h-11 rounded-2xl bg-[#1B4332] text-[#FAF9F6] flex items-center justify-center font-bold text-sm">
-                                    <Gift className="w-5 h-5 text-[#D4A373]" />
-                                </div>
-                                <div>
-                                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#8C6D46]">
-                                        {t('addPersonModal.giftExchangeBadge')}
-                                    </span>
-                                    <h3 className="text-xl font-bold text-[#1C1917]">
-                                        {t('addPersonModal.modalTitle')}
-                                    </h3>
-                                </div>
-                            </div>
-
-                            <button
-                                type="button"
-                                disabled={isAdding}
-                                onClick={() => setIsAddModalOpen(false)}
-                                className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-
-                        <p className="text-sm text-[#57534E] mb-5">
-                            {t('addPersonModal.modalDesc')}
-                        </p>
-
-                        <form
-                            onSubmit={handleAddParticipant}
-                            className="space-y-4"
-                        >
-                            <div>
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                                    {t('addPersonModal.personNameLabel')}
-                                </label>
-                                <input
-                                    type="text"
-                                    value={addNameInput}
-                                    onChange={(e) => {
-                                        setAddNameInput(e.target.value);
-                                        if (addError) setAddError('');
-                                    }}
-                                    autoFocus
-                                    placeholder={t('addPersonModal.personNamePlaceholder')}
-                                    className="w-full px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5 flex items-center justify-between">
-                                    <span>{t('addPersonModal.preventDrawingLabel')}</span>
-                                    <span className="text-[11px] font-normal text-[#78716C]">{t('addPersonModal.preventDrawingHint')}</span>
-                                </label>
-                                <select
-                                    value={addExclusionInput}
-                                    onChange={(e) => setAddExclusionInput(e.target.value)}
-                                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
-                                >
-                                    <option value="">{t('addPersonModal.noExclusionOpt')}</option>
-                                    {participants.map((p) => (
-                                        <option key={p.id} value={p.id}>
-                                            {t('addPersonModal.cannotDrawOpt', { name: p.name })}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-
-                            <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] text-xs text-[#57534E] flex items-start gap-2.5">
-                                <Sparkles className="w-4 h-4 text-[#D4A373] shrink-0 mt-0.5" />
-                                <span>
-                                    {t('addPersonModal.safeNotice')}
-                                </span>
-                            </div>
-
-                            {addError && (
-                                <p className="text-center text-xs font-semibold text-[#C84B31]">
-                                    {addError}
-                                </p>
-                            )}
-
-                            <div className="flex gap-2.5 pt-2">
-                                <button
-                                    type="button"
-                                    disabled={isAdding}
-                                    onClick={() => setIsAddModalOpen(false)}
-                                    className="flex-1 py-3 px-4 rounded-xl font-semibold text-sm bg-[#FAF9F6] hover:bg-[#F2EFE9] text-[#57534E] border border-[#E7E5E0] transition cursor-pointer"
-                                >
-                                    {t('addPersonModal.cancelBtn')}
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={!addNameInput.trim() || isAdding}
-                                    className="flex-1 py-3 px-4 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
-                                >
-                                    {isAdding ? (
-                                        <>
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                            <span>{t('addPersonModal.addingBtn')}</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Plus className="w-4 h-4" />
-                                            <span>{t('addPersonModal.addToRoomBtn')}</span>
-                                        </>
-                                    )}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
-
-            {/* ================================================================
-                REMOVE PARTICIPANT MODAL
-            ================================================================ */}
-            {removeTarget && (
-                <div
-                    className="fixed inset-0 z-50 bg-[#1C1917]/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
-                    onClick={() => !removingParticipant && setRemoveTarget(null)}
-                >
-                    <div
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 border border-[#E7E5E0] shadow-2xl"
-                    >
-                        <div className="flex items-start justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-11 h-11 rounded-2xl bg-[#C84B31]/15 text-[#C84B31] flex items-center justify-center font-bold text-sm">
-                                    {getInitials(removeTarget.name)}
-                                </div>
-                                <div>
-                                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#8C6D46]">
-                                        {t('removePersonModal.badge')}
-                                    </span>
-                                    <h3 className="text-xl font-bold text-[#1C1917]">
-                                        {t('removePersonModal.modalTitle', { name: removeTarget.name })}
-                                    </h3>
-                                </div>
-                            </div>
-
-                            <button
-                                type="button"
-                                disabled={removingParticipant}
-                                onClick={() => setRemoveTarget(null)}
-                                className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-
-                        {/* Warning */}
-                        <div className="p-3.5 rounded-2xl bg-[#FDF2F0] border border-[#F5D0C8] text-xs text-[#9E3B24] flex items-start gap-2.5 mb-5">
-                            <Trash2 className="w-4 h-4 shrink-0 mt-0.5 text-[#C84B31]" />
-                            <span>{t('removePersonModal.warning', { name: removeTarget.name })}</span>
-                        </div>
-
-                        {/* Reassignment options — only relevant once names are drawn */}
-                        {room.isDrawn && (
-                            <div className="space-y-2.5 mb-5">
-                            <button
-                                type="button"
-                                onClick={() => setRemoveMode('rebridge')}
-                                disabled={removingParticipant}
-                                className={`w-full text-left p-4 rounded-2xl border-2 transition cursor-pointer ${removeMode === 'rebridge'
-                                        ? 'border-[#1B4332] bg-[#1B4332]/5'
-                                        : 'border-[#E7E5E0] bg-white hover:border-[#D4A373]'
-                                    }`}
-                            >
-                                <div className="flex items-start gap-3">
-                                    <span
-                                        className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${removeMode === 'rebridge' ? 'border-[#1B4332]' : 'border-[#D6D3D1]'
-                                            }`}
-                                    >
-                                        {removeMode === 'rebridge' && (
-                                            <span className="w-2 h-2 rounded-full bg-[#1B4332]" />
-                                        )}
-                                    </span>
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="font-bold text-sm text-[#1C1917]">
-                                                {t('removePersonModal.optionRebridgeTitle')}
-                                            </span>
-                                            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#1B4332]/10 text-[#1B4332]">
-                                                {t('removePersonModal.recommendedBadge')}
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-[#57534E] mt-1">
-                                            {t('removePersonModal.optionRebridgeDesc', { name: removeTarget.name })}
-                                        </p>
-                                    </div>
-                                </div>
-                            </button>
-
-                            <button
-                                type="button"
-                                onClick={() => setRemoveMode('redraw')}
-                                disabled={removingParticipant}
-                                className={`w-full text-left p-4 rounded-2xl border-2 transition cursor-pointer ${removeMode === 'redraw'
-                                        ? 'border-[#1B4332] bg-[#1B4332]/5'
-                                        : 'border-[#E7E5E0] bg-white hover:border-[#D4A373]'
-                                    }`}
-                            >
-                                <div className="flex items-start gap-3">
-                                    <span
-                                        className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${removeMode === 'redraw' ? 'border-[#1B4332]' : 'border-[#D6D3D1]'
-                                            }`}
-                                    >
-                                        {removeMode === 'redraw' && (
-                                            <span className="w-2 h-2 rounded-full bg-[#1B4332]" />
-                                        )}
-                                    </span>
-                                    <div className="min-w-0">
-                                        <span className="font-bold text-sm text-[#1C1917]">
-                                            {t('removePersonModal.optionRedrawTitle')}
-                                        </span>
-                                        <p className="text-xs text-[#57534E] mt-1">
-                                            {t('removePersonModal.optionRedrawDesc')}
-                                        </p>
-                                        <p className="text-[11px] text-[#9E3B24] mt-1.5 flex items-center gap-1">
-                                            <Shuffle className="w-3 h-3 shrink-0" />
-                                            <span>{t('removePersonModal.optionRedrawNote')}</span>
-                                        </p>
-                                    </div>
-                                </div>
-                            </button>
-                        </div>
-                        )}
-
-                        {removeError && (
-                            <p className="text-center text-xs font-semibold text-[#C84B31] mb-4">
-                                {removeError}
-                            </p>
-                        )}
-
-                        <div className="flex gap-2.5 pt-1">
-                            <button
-                                type="button"
-                                disabled={removingParticipant}
-                                onClick={() => setRemoveTarget(null)}
-                                className="flex-1 py-3 px-4 rounded-xl font-semibold text-sm bg-[#FAF9F6] hover:bg-[#F2EFE9] text-[#57534E] border border-[#E7E5E0] transition cursor-pointer"
-                            >
-                                {t('common.cancel')}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleConfirmRemove}
-                                disabled={removingParticipant}
-                                className="flex-1 py-3 px-4 rounded-xl font-bold text-sm bg-[#C84B31] hover:bg-[#9E3B24] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
-                            >
-                                {removingParticipant ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                    <Trash2 className="w-4 h-4" />
-                                )}
-                                <span>
-                                    {removingParticipant
-                                        ? t('removePersonModal.removingBtn')
-                                        : t('removePersonModal.confirmBtn')}
-                                </span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ================================================================
-                ORGANIZER PIN / CLAIM MODAL
-            ================================================================ */}
-            {isOrganizerPinModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 space-y-5">
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <span className="w-10 h-10 rounded-2xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center">
-                                    <KeyRound className="w-5 h-5" />
-                                </span>
-                                <h3 className="text-xl font-bold text-[#1C1917]">
-                                    {organizerClaimMode
-                                        ? t('organizerModal.setupTitle')
-                                        : t('room.organizerPinTitle')}
-                                </h3>
-                            </div>
-                            <button
-                                type="button"
-                                disabled={verifyingOrganizerPin || claimingOrganizer}
-                                onClick={() => setIsOrganizerPinModalOpen(false)}
-                                className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-
-                        {organizerClaimMode ? (
-                            adminToken ? (
-                                <form
-                                    onSubmit={(e) => {
-                                        e.preventDefault();
-                                        handleClaimOrganizer();
-                                    }}
-                                    className="space-y-4"
-                                >
-                                    <p className="text-sm text-[#57534E]">
-                                        {t('organizerModal.setupDesc')}
-                                    </p>
-
-                                    <div>
-                                        <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                                            {t('organizerModal.nameLabel')}
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={organizerNameInput}
-                                            onChange={(e) => {
-                                                setOrganizerNameInput(e.target.value);
-                                                if (organizerPinError) setOrganizerPinError('');
-                                            }}
-                                            autoFocus
-                                            placeholder={t('organizerModal.namePlaceholder')}
-                                            className="w-full px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-2.5">
-                                            {t('organizerModal.pinLabel')}
-                                        </label>
-                                        <PinInput
-                                            value={organizerClaimPinBuffer}
-                                            onChange={(val) => {
-                                                setOrganizerClaimPinBuffer(val);
-                                                if (organizerPinError) setOrganizerPinError('');
-                                            }}
-                                            hasError={Boolean(organizerPinError)}
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
-                                            {t('organizerModal.participantLinkLabel')}
-                                        </label>
-                                        <select
-                                            value={organizerLinkParticipantId}
-                                            onChange={(e) => setOrganizerLinkParticipantId(e.target.value)}
-                                            className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
-                                        >
-                                            <option value="">
-                                                {t('organizerModal.notParticipatingOpt')}
-                                            </option>
-                                            {participants.map((p) => (
-                                                <option key={p.id} value={p.id}>
-                                                    {p.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    {organizerPinError && (
-                                        <p className="text-center text-xs font-semibold text-[#C84B31]">
-                                            {organizerPinError}
-                                        </p>
-                                    )}
-
-                                    <button
-                                        type="submit"
-                                        disabled={claimingOrganizer}
-                                        className="w-full py-3 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
-                                    >
-                                        {claimingOrganizer ? (
-                                            <>
-                                                <Loader2 className="w-4 h-4 animate-spin" />
-                                                <span>{t('organizerModal.settingUp')}</span>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Unlock className="w-4 h-4" />
-                                                <span>{t('organizerModal.saveUnlockBtn')}</span>
-                                            </>
-                                        )}
-                                    </button>
-                                </form>
-                            ) : (
-                                <p className="text-sm text-[#57534E]">
-                                    {t('organizerModal.needLinkNotice')}
-                                </p>
-                            )
-                        ) : (
-                            <form
-                                onSubmit={(e) => {
-                                    e.preventDefault();
-                                    handleOrganizerPinSubmit();
-                                }}
-                                className="space-y-4"
-                            >
-                                <p className="text-sm text-[#57534E]">
-                                    {t('room.organizerPinDesc')}
-                                </p>
-
-                                <PinInput
-                                    value={organizerPinBuffer}
-                                    onChange={setOrganizerPinBuffer}
-                                    onComplete={(p) => handleOrganizerPinSubmit(p)}
-                                    disabled={verifyingOrganizerPin}
-                                    autoFocus
-                                />
-
-                                {organizerPinError && (
-                                    <p className="text-center text-xs font-semibold text-[#C84B31]">
-                                        {organizerPinError}
-                                    </p>
-                                )}
-
-                                <button
-                                    type="submit"
-                                    disabled={organizerPinBuffer.length !== 4 || verifyingOrganizerPin}
-                                    className="w-full py-3 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
-                                >
-                                    {verifyingOrganizerPin ? (
-                                        <>
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                            <span>{t('room.verifyingPin')}</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Unlock className="w-4 h-4" />
-                                            <span>{t('room.unlockOrganizerBtn')}</span>
-                                        </>
-                                    )}
-                                </button>
-
-                                {adminToken && (
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setOrganizerClaimMode(true);
-                                            setOrganizerPinBuffer('');
-                                            setOrganizerPinError('');
-                                        }}
-                                        className="w-full text-xs font-semibold text-[#8C6D46] hover:underline cursor-pointer"
-                                    >
-                                        {t('organizerModal.reclaimLink')}
-                                    </button>
-                                )}
-                            </form>
-                        )}
-                    </div>
-                </div>
+                <AddPersonModal
+                    participants={participants}
+                    onClose={() => setIsAddModalOpen(false)}
+                    onAdd={handleAddPerson}
+                    t={t}
+                />
             )}
         </div>
     );
