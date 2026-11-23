@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import {
   Gift,
@@ -240,18 +241,23 @@ export default function OnboardingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FAF9F6] text-[#1C1917] pb-16">
+    <div className="min-h-screen bg-white text-[#1C1917] pb-16">
       {/* Header */}
       <header className="max-w-2xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between gap-3">
         <div
           onClick={() => setStep(1)}
           className="flex items-center gap-2.5 cursor-pointer group"
         >
-          <div className="w-10 h-10 rounded-2xl bg-[#1B4332] text-[#FAF9F6] flex items-center justify-center shadow-sm group-hover:scale-105 transition">
-            <Gift className="w-5 h-5 text-[#D4A373]" />
-          </div>
+          <Image
+            src="/logo.svg"
+            alt={t('common.appName')}
+            width={42}
+            height={34}
+            className="w-9 h-auto object-contain group-hover:scale-105 transition"
+            priority
+          />
           <div>
-            <h1 className="text-lg font-bold tracking-tight text-[#1C1917] leading-none">
+            <h1 className="text-lg font-bold tracking-tight text-[#1C1917] leading-none font-title">
               {t('common.appName')}
             </h1>
             <p className="text-xs text-[#78716C] mt-0.5">

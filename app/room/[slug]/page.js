@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 import {
     Gift,
     Lock,
@@ -435,7 +436,7 @@ function RoomContent() {
     // ==========================================================================
     if (loading) {
         return (
-            <div className="min-h-screen bg-[#FAF9F6] flex items-center justify-center text-[#1B4332]">
+            <div className="min-h-screen bg-white flex items-center justify-center text-[#1B4332]">
                 <Loader2 className="w-8 h-8 animate-spin" />
             </div>
         );
@@ -443,11 +444,11 @@ function RoomContent() {
 
     if (loadError || !room) {
         return (
-            <div className="min-h-screen bg-[#FAF9F6] flex flex-col items-center justify-center p-4 text-center relative">
+            <div className="min-h-screen bg-white flex flex-col items-center justify-center p-4 text-center relative">
                 <div className="absolute top-6 right-6">
                     <LanguageToggle />
                 </div>
-                <h2 className="text-2xl font-bold text-[#1C1917] mb-2">
+                <h2 className="text-2xl font-bold text-[#1C1917] mb-2 font-title">
                     {t('room.roomNotFound')}
                 </h2>
                 <p className="text-sm text-[#57534E] mb-6">
@@ -466,7 +467,7 @@ function RoomContent() {
     const claimedCount = participants.filter((p) => p.isClaimed).length;
 
     return (
-        <div className="min-h-screen bg-[#FAF9F6] text-[#1C1917] pb-16">
+        <div className="min-h-screen bg-white text-[#1C1917] pb-16">
             {/* Toast Notification */}
             {toastMessage && (
                 <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50">
@@ -479,12 +480,17 @@ function RoomContent() {
 
             {/* Header */}
             <header className="max-w-3xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between gap-3">
-                <Link href="/" className="flex items-center gap-2.5">
-                    <div className="w-10 h-10 rounded-2xl bg-[#1B4332] text-[#FAF9F6] flex items-center justify-center shadow-sm">
-                        <Gift className="w-5 h-5 text-[#D4A373]" />
-                    </div>
+                <Link href="/" className="flex items-center gap-2.5 group">
+                    <Image
+                        src="/logo.png"
+                        alt={t('common.appName')}
+                        width={42}
+                        height={34}
+                        className="w-9 h-auto object-contain group-hover:scale-105 transition"
+                        priority
+                    />
                     <div>
-                        <h1 className="text-lg font-bold tracking-tight text-[#1C1917] leading-none">
+                        <h1 className="text-lg font-bold tracking-tight text-[#1C1917] leading-none font-title">
                             {t('common.appName')}
                         </h1>
                         <p className="text-xs text-[#78716C] mt-0.5">
@@ -1499,7 +1505,7 @@ export default function RoomPage() {
     return (
         <Suspense
             fallback={
-                <div className="min-h-screen bg-[#FAF9F6] flex items-center justify-center text-[#1B4332]">
+                <div className="min-h-screen bg-white flex items-center justify-center text-[#1B4332]">
                     <Loader2 className="w-8 h-8 animate-spin" />
                 </div>
             }
