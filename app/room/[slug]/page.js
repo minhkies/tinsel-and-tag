@@ -11,6 +11,8 @@ import {
     Copy,
     Check,
     Plus,
+    Trash2,
+    Shuffle,
     Sparkles,
     Calendar,
     DollarSign,
@@ -73,6 +75,11 @@ import {
     verifyPasskeyRegistration,
     generatePasskeyAuthenticationOptions,
     verifyPasskeyAuthentication,
+    removeParticipant,
+    getRoomExclusions,
+    addExclusionRule,
+    removeExclusionRule,
+    drawNames,
 } from '@/app/actions';
 
 const AVATAR_PALETTES = [
@@ -188,6 +195,23 @@ function RoomContent() {
     const [showPasskeyPrompt, setShowPasskeyPrompt] = useState(false);
     const [enablingPasskey, setEnablingPasskey] = useState(false);
     const [unlockingWithPasskey, setUnlockingWithPasskey] = useState(false);
+
+    // Remove participant modal state
+    const [removeTarget, setRemoveTarget] = useState(null);
+    const [removeMode, setRemoveMode] = useState('rebridge');
+    const [removingParticipant, setRemovingParticipant] = useState(false);
+    const [removeError, setRemoveError] = useState('');
+
+    // Exclusion rules (organizer drawer) state
+    const [exclusionPairs, setExclusionPairs] = useState([]);
+    const [exclusionA, setExclusionA] = useState('');
+    const [exclusionB, setExclusionB] = useState('');
+    const [savingExclusion, setSavingExclusion] = useState(false);
+    const [exclusionError, setExclusionError] = useState('');
+
+    // Draw names (organizer drawer) state
+    const [drawingNames, setDrawingNames] = useState(false);
+    const [drawError, setDrawError] = useState('');
 
     // Detect WebAuthn support once on mount. Hides all biometric UI in
     // unsupported browsers (e.g., Instagram/Messenger in-app webviews).
@@ -734,7 +758,9 @@ function RoomContent() {
     // ==========================================================================
     const handleOrganizerControlsClick = () => {
         if (adminToken) {
-            setShowOrganizerDrawer((prev) => !prev);
+            const willOpen = !showOrganizerDrawer;
+            setShowOrganizerDrawer(!showOrganizerDrawer);
+            if (willOpen) loadExclusions();
         } else {
             setOrganizerPinBuffer('');
             setOrganizerPinError('');
@@ -759,6 +785,7 @@ function RoomContent() {
                 }
                 setIsOrganizerPinModalOpen(false);
                 setShowOrganizerDrawer(true);
+                loadExclusions();
             }
         } catch {
             setOrganizerPinError('Something went wrong.');
@@ -791,6 +818,114 @@ function RoomContent() {
         } else {
             showToast(`Reset PIN for ${personName}.`);
         }
+        await loadRoomData();
+    };
+
+    const handleConfirmRemove = async () => {
+        if (!removeTarget || removingParticipant) return;
+
+        setRemovingParticipant(true);
+        setRemoveError('');
+
+        const res = await removeParticipant({
+            slug,
+            adminToken,
+            participantId: removeTarget.id,
+            mode: removeMode,
+        });
+
+        setRemovingParticipant(false);
+
+        if (res.error) {
+            setRemoveError(res.error);
+            return;
+        }
+
+        const removedName = removeTarget.name;
+        setRemoveTarget(null);
+        setRemoveMode('rebridge');
+
+        if (res.mode === 'redraw') {
+            showToast(t('removePersonModal.removedRedrawToast', { name: removedName }));
+        } else if (res.mode === 'none') {
+            showToast(t('removePersonModal.removedSimpleToast', { name: removedName }));
+        } else {
+            showToast(t('removePersonModal.removedRebridgeToast', { name: removedName }));
+        }
+        await loadRoomData();
+        await loadExclusions();
+    };
+
+    // ==========================================================================
+    // EXCLUSION RULES (ORGANIZER)
+    // ==========================================================================
+    const loadExclusions = async () => {
+        if (!adminToken) return;
+        const res = await getRoomExclusions({ slug, adminToken });
+        if (!res.error) {
+            setExclusionPairs(res.pairs || []);
+        }
+    };
+
+    const handleAddExclusion = async () => {
+        if (!exclusionA || !exclusionB || exclusionA === exclusionB || savingExclusion) return;
+
+        setSavingExclusion(true);
+        setExclusionError('');
+
+        const res = await addExclusionRule({
+            slug,
+            adminToken,
+            participantIdA: exclusionA,
+            participantIdB: exclusionB,
+        });
+
+        setSavingExclusion(false);
+
+        if (res.error) {
+            setExclusionError(res.error);
+            return;
+        }
+
+        showToast(res.notice || t('room.exclusionAddedToast'));
+        setExclusionA('');
+        setExclusionB('');
+        setExclusionError('');
+        await loadExclusions();
+        await loadRoomData();
+    };
+
+    const handleRemoveExclusion = async (idA, idB) => {
+        const res = await removeExclusionRule({
+            slug,
+            adminToken,
+            participantIdA: idA,
+            participantIdB: idB,
+        });
+        if (res.error) {
+            showToast(res.error);
+            return;
+        }
+        showToast(t('room.exclusionRemovedToast'));
+        await loadExclusions();
+    };
+
+    const handleDrawNames = async () => {
+        if (drawingNames) return;
+
+        setDrawingNames(true);
+        setDrawError('');
+
+        const res = await drawNames({ slug, adminToken });
+
+        setDrawingNames(false);
+
+        if (res.error) {
+            setDrawError(res.error);
+            return;
+        }
+
+        showToast(res.notice || t('room.drawNamesToast'));
         await loadRoomData();
     };
 
@@ -881,7 +1016,15 @@ function RoomContent() {
                                 <div>
                                     <div className="flex flex-wrap items-center gap-2 mb-2">
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-xs font-semibold">
-                                            <Check className="w-3.5 h-3.5" /> {participants.length >= 2 ? t('room.namesDrawn') : t('room.setupMode')}
+                                            {room.isDrawn ? (
+                                                <>
+                                                    <Check className="w-3.5 h-3.5" /> {t('room.namesDrawn')}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Shuffle className="w-3.5 h-3.5" /> {t('room.drawPending')}
+                                                </>
+                                            )}
                                         </span>
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#FAF9F6] border border-[#E7E5E0] text-[#57534E] text-xs font-medium">
                                             <DollarSign className="w-3.5 h-3.5 text-[#D4A373]" />
@@ -955,6 +1098,48 @@ function RoomContent() {
 
                             {showOrganizerDrawer && (
                                 <div className="mt-4 p-5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] space-y-4">
+                                    {/* Draw Names (only while the room is undrawn) */}
+                                    {!room.isDrawn && (
+                                        <div className="p-4 rounded-2xl bg-[#1B4332]/5 border border-[#1B4332]/20 space-y-3">
+                                            <div className="flex items-center gap-2">
+                                                <Shuffle className="w-4 h-4 text-[#1B4332]" />
+                                                <span className="text-sm font-bold text-[#1C1917]">
+                                                    {t('room.drawNamesTitle')}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-[#57534E]">
+                                                {t('room.drawNamesDesc')}
+                                            </p>
+                                            <button
+                                                type="button"
+                                                onClick={handleDrawNames}
+                                                disabled={participants.length < 2 || drawingNames}
+                                                className="w-full py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:cursor-not-allowed"
+                                            >
+                                                {drawingNames ? (
+                                                    <Loader2 className="w-4 h-4 animate-spin text-[#D4A373]" />
+                                                ) : (
+                                                    <Shuffle className="w-4 h-4 text-[#D4A373]" />
+                                                )}
+                                                <span>
+                                                    {drawingNames
+                                                        ? t('room.drawingNames')
+                                                        : t('room.drawNamesBtn')}
+                                                </span>
+                                            </button>
+                                            {participants.length < 2 && (
+                                                <p className="text-[11px] text-[#A8A29E]">
+                                                    {t('room.drawNamesMinPeople')}
+                                                </p>
+                                            )}
+                                            {drawError && (
+                                                <p className="text-xs font-semibold text-[#C84B31]">
+                                                    {drawError}
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+
                                     {/* Quick Add Person */}
                                     <div>
                                         <div className="flex items-center justify-between mb-2">
@@ -1024,18 +1209,142 @@ function RoomContent() {
                                                             </span>
                                                         )}
                                                     </div>
-                                                    {p.isClaimed && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleResetPin(p.id, p.name)}
-                                                            className="text-xs font-semibold text-[#C84B31] hover:underline cursor-pointer"
-                                                        >
-                                                            {t('room.resetPinBtn')}
-                                                        </button>
-                                                    )}
+                                                    <div className="flex items-center gap-3 shrink-0">
+                                                        {p.isClaimed && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleResetPin(p.id, p.name)}
+                                                                className="text-xs font-semibold text-[#C84B31] hover:underline cursor-pointer"
+                                                            >
+                                                                {t('room.resetPinBtn')}
+                                                            </button>
+                                                        )}
+                                                        {p.id !== activeParticipantId && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setRemoveTarget(p);
+                                                                    setRemoveMode('rebridge');
+                                                                    setRemoveError('');
+                                                                }}
+                                                                disabled={participants.length <= 3}
+                                                                title={
+                                                                    participants.length <= 3
+                                                                        ? t('room.minParticipantsTooltip')
+                                                                        : t('room.removeParticipantBtn')
+                                                                }
+                                                                aria-label={t('room.removeParticipantBtn')}
+                                                                className="p-1.5 rounded-lg text-[#A8A29E] hover:text-[#C84B31] hover:bg-[#FDF2F0] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#A8A29E]"
+                                                            >
+                                                                <Trash2 className="w-4 h-4" />
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             ))}
                                         </div>
+                                    </div>
+
+                                    {/* Exclusion Rules */}
+                                    <div className="pt-3 border-t border-[#E7E5E0]">
+                                        <span className="text-xs font-bold uppercase tracking-wider text-[#57534E] block mb-2">
+                                            {t('room.exclusionRulesTitle')}
+                                        </span>
+
+                                        {room.isDrawn && (
+                                            <p className="text-[11px] text-[#A8A29E] mb-3 flex items-center gap-1">
+                                                <Lock className="w-3 h-3" />
+                                                <span>{t('room.exclusionsLocked')}</span>
+                                            </p>
+                                        )}
+
+                                        {exclusionPairs.length > 0 ? (
+                                            <div className="flex flex-wrap gap-2 mb-3">
+                                                {exclusionPairs.map((pair) => (
+                                                    <span
+                                                        key={`${pair.idA}-${pair.idB}`}
+                                                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#FDF2F0] border border-[#F5D0C8] text-[#9E3B24] text-xs font-medium"
+                                                    >
+                                                        <span>
+                                                            {pair.nameA} ↔ {pair.nameB}
+                                                        </span>
+                                                        {!room.isDrawn && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleRemoveExclusion(pair.idA, pair.idB)}
+                                                                title={t('room.removeExclusionBtn')}
+                                                                aria-label={t('room.removeExclusionBtn')}
+                                                                className="hover:text-[#1C1917] cursor-pointer"
+                                                            >
+                                                                <X className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        )}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="text-xs text-[#A8A29E] mb-3">
+                                                {t('room.noExclusions')}
+                                            </p>
+                                        )}
+
+                                        {!room.isDrawn && (
+                                            <div className="flex flex-col gap-2">
+                                                <div className="flex items-center gap-2">
+                                                    <select
+                                                        value={exclusionA}
+                                                        onChange={(e) => {
+                                                            setExclusionA(e.target.value);
+                                                            if (exclusionError) setExclusionError('');
+                                                        }}
+                                                        className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm font-medium text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
+                                                    >
+                                                        <option value="">{t('room.selectPerson')}</option>
+                                                        {participants.map((p) => (
+                                                            <option key={p.id} value={p.id}>
+                                                                {p.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <span className="text-xs font-semibold text-[#78716C] shrink-0">
+                                                        {t('onboarding.cannotDraw')}
+                                                    </span>
+                                                    <select
+                                                        value={exclusionB}
+                                                        onChange={(e) => {
+                                                            setExclusionB(e.target.value);
+                                                            if (exclusionError) setExclusionError('');
+                                                        }}
+                                                        className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm font-medium text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
+                                                    >
+                                                        <option value="">{t('room.selectPerson')}</option>
+                                                        {participants.map((p) => (
+                                                            <option key={p.id} value={p.id}>
+                                                                {p.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleAddExclusion}
+                                                    disabled={
+                                                        !exclusionA || !exclusionB || exclusionA === exclusionB || savingExclusion
+                                                    }
+                                                    className="w-full px-4 py-2.5 rounded-xl border border-[#E7E5E0] bg-[#FAF9F6] hover:bg-[#F2EFE9] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-sm font-semibold text-[#1C1917] transition cursor-pointer disabled:cursor-not-allowed"
+                                                >
+                                                    {savingExclusion
+                                                        ? t('room.savingExclusion')
+                                                        : t('onboarding.blockPairBtn')}
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        {exclusionError && (
+                                            <p className="text-xs font-semibold text-[#C84B31] mt-2">
+                                                {exclusionError}
+                                            </p>
+                                        )}
                                     </div>
 
                                     {/* Secret Organizer Link */}
@@ -1272,7 +1581,19 @@ function RoomContent() {
                         )}
 
                         {/* Secret Santa Reveal Envelope / Card */}
-                        {!isCardRevealed ? (
+                        {!dashboard.roomDrawn ? (
+                            <div className="rounded-3xl bg-white border-2 border-dashed border-[#D4A373] p-8 sm:p-12 text-center">
+                                <div className="w-16 h-16 rounded-2xl bg-[#D4A373]/20 border border-[#D4A373]/40 flex items-center justify-center mb-5 mx-auto">
+                                    <Shuffle className="w-8 h-8 text-[#D4A373]" />
+                                </div>
+                                <h3 className="text-2xl sm:text-3xl font-bold tracking-tight text-[#1C1917] mb-3">
+                                    {t('dashboard.waitingForDrawTitle')}
+                                </h3>
+                                <p className="text-sm text-[#57534E] max-w-md mx-auto">
+                                    {t('dashboard.waitingForDrawDesc')}
+                                </p>
+                            </div>
+                        ) : !isCardRevealed ? (
                             <div
                                 onClick={handleRevealCard}
                                 className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#1B4332] via-[#183A2B] to-[#10281E] text-[#FAF9F6] p-8 sm:p-12 text-center shadow-xl border border-[#2D5A4C] cursor-pointer group"
@@ -1880,6 +2201,158 @@ function RoomContent() {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* ================================================================
+                REMOVE PARTICIPANT MODAL
+            ================================================================ */}
+            {removeTarget && (
+                <div
+                    className="fixed inset-0 z-50 bg-[#1C1917]/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
+                    onClick={() => !removingParticipant && setRemoveTarget(null)}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 border border-[#E7E5E0] shadow-2xl"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-2xl bg-[#C84B31]/15 text-[#C84B31] flex items-center justify-center font-bold text-sm">
+                                    {getInitials(removeTarget.name)}
+                                </div>
+                                <div>
+                                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#8C6D46]">
+                                        {t('removePersonModal.badge')}
+                                    </span>
+                                    <h3 className="text-xl font-bold text-[#1C1917]">
+                                        {t('removePersonModal.modalTitle', { name: removeTarget.name })}
+                                    </h3>
+                                </div>
+                            </div>
+
+                            <button
+                                type="button"
+                                disabled={removingParticipant}
+                                onClick={() => setRemoveTarget(null)}
+                                className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        {/* Warning */}
+                        <div className="p-3.5 rounded-2xl bg-[#FDF2F0] border border-[#F5D0C8] text-xs text-[#9E3B24] flex items-start gap-2.5 mb-5">
+                            <Trash2 className="w-4 h-4 shrink-0 mt-0.5 text-[#C84B31]" />
+                            <span>{t('removePersonModal.warning', { name: removeTarget.name })}</span>
+                        </div>
+
+                        {/* Reassignment options — only relevant once names are drawn */}
+                        {room.isDrawn && (
+                            <div className="space-y-2.5 mb-5">
+                            <button
+                                type="button"
+                                onClick={() => setRemoveMode('rebridge')}
+                                disabled={removingParticipant}
+                                className={`w-full text-left p-4 rounded-2xl border-2 transition cursor-pointer ${removeMode === 'rebridge'
+                                        ? 'border-[#1B4332] bg-[#1B4332]/5'
+                                        : 'border-[#E7E5E0] bg-white hover:border-[#D4A373]'
+                                    }`}
+                            >
+                                <div className="flex items-start gap-3">
+                                    <span
+                                        className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${removeMode === 'rebridge' ? 'border-[#1B4332]' : 'border-[#D6D3D1]'
+                                            }`}
+                                    >
+                                        {removeMode === 'rebridge' && (
+                                            <span className="w-2 h-2 rounded-full bg-[#1B4332]" />
+                                        )}
+                                    </span>
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-bold text-sm text-[#1C1917]">
+                                                {t('removePersonModal.optionRebridgeTitle')}
+                                            </span>
+                                            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#1B4332]/10 text-[#1B4332]">
+                                                {t('removePersonModal.recommendedBadge')}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-[#57534E] mt-1">
+                                            {t('removePersonModal.optionRebridgeDesc', { name: removeTarget.name })}
+                                        </p>
+                                    </div>
+                                </div>
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => setRemoveMode('redraw')}
+                                disabled={removingParticipant}
+                                className={`w-full text-left p-4 rounded-2xl border-2 transition cursor-pointer ${removeMode === 'redraw'
+                                        ? 'border-[#1B4332] bg-[#1B4332]/5'
+                                        : 'border-[#E7E5E0] bg-white hover:border-[#D4A373]'
+                                    }`}
+                            >
+                                <div className="flex items-start gap-3">
+                                    <span
+                                        className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${removeMode === 'redraw' ? 'border-[#1B4332]' : 'border-[#D6D3D1]'
+                                            }`}
+                                    >
+                                        {removeMode === 'redraw' && (
+                                            <span className="w-2 h-2 rounded-full bg-[#1B4332]" />
+                                        )}
+                                    </span>
+                                    <div className="min-w-0">
+                                        <span className="font-bold text-sm text-[#1C1917]">
+                                            {t('removePersonModal.optionRedrawTitle')}
+                                        </span>
+                                        <p className="text-xs text-[#57534E] mt-1">
+                                            {t('removePersonModal.optionRedrawDesc')}
+                                        </p>
+                                        <p className="text-[11px] text-[#9E3B24] mt-1.5 flex items-center gap-1">
+                                            <Shuffle className="w-3 h-3 shrink-0" />
+                                            <span>{t('removePersonModal.optionRedrawNote')}</span>
+                                        </p>
+                                    </div>
+                                </div>
+                            </button>
+                        </div>
+                        )}
+
+                        {removeError && (
+                            <p className="text-center text-xs font-semibold text-[#C84B31] mb-4">
+                                {removeError}
+                            </p>
+                        )}
+
+                        <div className="flex gap-2.5 pt-1">
+                            <button
+                                type="button"
+                                disabled={removingParticipant}
+                                onClick={() => setRemoveTarget(null)}
+                                className="flex-1 py-3 px-4 rounded-xl font-semibold text-sm bg-[#FAF9F6] hover:bg-[#F2EFE9] text-[#57534E] border border-[#E7E5E0] transition cursor-pointer"
+                            >
+                                {t('common.cancel')}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmRemove}
+                                disabled={removingParticipant}
+                                className="flex-1 py-3 px-4 rounded-xl font-bold text-sm bg-[#C84B31] hover:bg-[#9E3B24] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
+                            >
+                                {removingParticipant ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <Trash2 className="w-4 h-4" />
+                                )}
+                                <span>
+                                    {removingParticipant
+                                        ? t('removePersonModal.removingBtn')
+                                        : t('removePersonModal.confirmBtn')}
+                                </span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

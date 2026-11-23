@@ -196,6 +196,25 @@ async function consumeWebAuthnChallenge(participantId, purpose) {
   return data.challenge;
 }
 
+/**
+ * Whether a room's Secret Santa draw has happened. Defaults to true when the
+ * column can't be read (e.g., migration not applied yet), which matches the
+ * behavior of rooms that predate the deferred-draw feature.
+ */
+async function getRoomDrawnStatus(roomId) {
+  try {
+    const { data } = await supabaseAdmin
+      .from('rooms')
+      .select('is_drawn')
+      .eq('id', roomId)
+      .single();
+    return data ? Boolean(data.is_drawn) : true;
+  } catch (err) {
+    console.error('rooms.is_drawn fetch error:', err);
+    return true;
+  }
+}
+
 // ============================================================================
 // 2. BACKTRACKING SECRET SANTA MATCHER
 // ============================================================================
@@ -260,8 +279,9 @@ function generateSecretSantaMatches(participants) {
 // ============================================================================
 
 /**
- * Creates a new Secret Santa room, inserts participants with UUIDs,
- * computes a valid draw respecting exclusion rules, and returns { slug, adminToken }.
+ * Creates a new Secret Santa room. Matches are NOT drawn at creation anymore —
+ * participants are inserted without assignments and the organizer draws names
+ * later via drawNames().
  */
 export async function createRoom({ name, budget, exchangeDate, participants = [] }) {
   try {
@@ -271,7 +291,7 @@ export async function createRoom({ name, budget, exchangeDate, participants = []
 
     const safeParticipants = Array.isArray(participants) ? participants : [];
 
-    // Generate real UUIDs upfront so we can map exclusion rules & assignments cleanly
+    // Generate real UUIDs upfront so we can map exclusion rules cleanly
     const prepared = safeParticipants.map((p) => ({
       tempId: p.id,
       id: crypto.randomUUID(),
@@ -289,34 +309,10 @@ export async function createRoom({ name, budget, exchangeDate, participants = []
         .filter(Boolean),
     }));
 
-    let assignments = {};
-    if (nodes.length >= 3) {
-      assignments = generateSecretSantaMatches(nodes);
-      if (!assignments) {
-        return {
-          error:
-            'No valid draw exists with these exclusion rules. Remove an exclusion or adjust participants.',
-        };
-      }
-    } else if (nodes.length === 2) {
-      const [p1, p2] = nodes;
-      if (p1.exclusions.includes(p2.id) || p2.exclusions.includes(p1.id)) {
-        return { error: 'The 2 participants have an exclusion rule blocking each other.' };
-      }
-      assignments = {
-        [p1.id]: p2.id,
-        [p2.id]: p1.id,
-      };
-    } else if (nodes.length === 1) {
-      assignments = {
-        [nodes[0].id]: null,
-      };
-    }
-
     const slug = generateSlug(6);
     const adminToken = crypto.randomBytes(24).toString('hex');
 
-    // 1. Insert Room
+    // 1. Insert Room (undrawn — the organizer draws names when ready)
     const { data: room, error: roomError } = await supabaseAdmin
       .from('rooms')
       .insert({
@@ -325,20 +321,21 @@ export async function createRoom({ name, budget, exchangeDate, participants = []
         budget: budget?.trim() || 'No limit',
         exchange_date: exchangeDate || null,
         admin_token: adminToken,
+        is_drawn: false,
       })
       .select('id, slug')
       .single();
 
     if (roomError) throw roomError;
 
-    // 2. Insert Participants (if any provided)
+    // 2. Insert Participants (if any provided) without assignments
     if (nodes.length > 0) {
       const rowsToInsert = nodes.map((node) => ({
         id: node.id,
         room_id: room.id,
         name: node.name,
         exclusions: node.exclusions,
-        assignee_id: assignments[node.id] || null,
+        assignee_id: null,
         dislikes: '',
         has_revealed: false,
       }));
@@ -372,6 +369,8 @@ export async function getRoomLobby(slug) {
     if (roomError || !room) {
       return { error: 'Room not found.' };
     }
+
+    const isDrawn = await getRoomDrawnStatus(room.id);
 
     const { data: participants, error: partError } = await supabaseAdmin
       .from('participants')
@@ -412,6 +411,7 @@ export async function getRoomLobby(slug) {
         name: room.name,
         budget: room.budget,
         exchangeDate: room.exchange_date,
+        isDrawn,
       },
       participants: participants.map((p) => ({
         id: p.id,
@@ -498,7 +498,7 @@ export async function getUnlockedDashboard(slug) {
     // 1. Fetch active participant
     const { data: me, error: meError } = await supabaseAdmin
       .from('participants')
-      .select('id, name, assignee_id, dislikes, has_revealed, pin_hash')
+      .select('id, name, assignee_id, dislikes, has_revealed, pin_hash, room_id')
       .eq('id', participantId)
       .single();
 
@@ -506,6 +506,13 @@ export async function getUnlockedDashboard(slug) {
       const cookieStore = await cookies();
       cookieStore.delete(`ss_session_${slug}`);
       return { error: 'PIN_RESET', message: 'PIN was reset. Session locked.' };
+    }
+
+    // Has the organizer drawn names yet? Defaults to true (drawn) if the
+    // deferred-draw migration hasn't been applied.
+    let roomDrawn = true;
+    if (me.room_id) {
+      roomDrawn = await getRoomDrawnStatus(me.room_id);
     }
 
     // Does this participant have any registered passkeys? Guarded so the
@@ -545,6 +552,7 @@ export async function getUnlockedDashboard(slug) {
       .order('created_at', { ascending: true });
 
     return {
+      roomDrawn,
       me: {
         id: me.id,
         name: me.name,
@@ -1049,6 +1057,474 @@ export async function organizerResetPin({ slug, adminToken, participantId }) {
 }
 
 /**
+ * Organizer-only action: removes a participant from the room.
+ *
+ * mode === 'rebridge': re-link only the affected pair — the person buying
+ *   for the removed participant (A) now buys for the person the removed
+ *   participant was buying for (C). Everyone else keeps their match.
+ *   Automatically falls back to 'redraw' when the re-link would break
+ *   exclusion rules or an edge of the chain is missing.
+ * mode === 'redraw': remove the participant and re-run the draw for everyone
+ *   remaining (any changed envelopes are reset so they reveal again).
+ *
+ * Cleanup: strips the removed participant from all exclusion lists, clears
+ * any assignee references pointing at them, and deletes their wishlist
+ * items, passkey credentials, and WebAuthn challenges before deleting the
+ * participant row, so no foreign-key constraint is violated.
+ */
+export async function removeParticipant({ slug, adminToken, participantId, mode }) {
+  try {
+    if (!['rebridge', 'redraw'].includes(mode)) {
+      return { error: 'Invalid removal mode.' };
+    }
+
+    // 1. Fetch room and verify organizer token
+    const { data: room, error: roomError } = await supabaseAdmin
+      .from('rooms')
+      .select('id, slug, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (roomError || !room) return { error: 'Room not found.' };
+    if (!adminToken || room.admin_token !== adminToken) {
+      return { error: 'Invalid organizer token.' };
+    }
+
+    // 2. Fetch participants
+    const { data: participants, error: partError } = await supabaseAdmin
+      .from('participants')
+      .select('id, name, exclusions, assignee_id, has_revealed')
+      .eq('room_id', room.id);
+
+    if (partError) throw partError;
+
+    const target = participants.find((p) => p.id === participantId);
+    if (!target) return { error: 'Participant not found.' };
+
+    // 3. Prevent self-removal (the organizer's own unlocked session)
+    const sessionParticipantId = await getAuthenticatedParticipantId(slug, false);
+    if (sessionParticipantId === participantId) {
+      return { error: 'You cannot remove yourself.' };
+    }
+
+    // 4. Minimum participant guard (at least 3 must remain)
+    if (participants.length <= 3) {
+      return { error: 'At least 3 participants must remain in the room.' };
+    }
+
+    // Undrawn rooms have no matches to fix — skip rebridge/redraw entirely
+    const isDrawn = await getRoomDrawnStatus(room.id);
+
+    const remaining = participants.filter((p) => p.id !== participantId);
+
+    // 5. Strip the removed participant from everyone's exclusion lists
+    const exclusionCleanup = [];
+    for (const p of remaining) {
+      const exclusions = Array.isArray(p.exclusions) ? p.exclusions : [];
+      if (exclusions.includes(participantId)) {
+        exclusionCleanup.push(
+          supabaseAdmin
+            .from('participants')
+            .update({ exclusions: exclusions.filter((id) => id !== participantId) })
+            .eq('id', p.id)
+        );
+      }
+    }
+    await Promise.all(exclusionCleanup);
+
+    let effectiveMode = mode;
+
+    if (isDrawn) {
+      if (mode === 'rebridge') {
+      // A = the person buying for the removed participant; C = their recipient
+      const giver = participants.find((p) => p.assignee_id === participantId);
+      const recipient = giver ? remaining.find((p) => p.id === target.assignee_id) : null;
+
+      const relinkValid =
+        giver &&
+        recipient &&
+        giver.id !== recipient.id &&
+        !(giver.exclusions || []).includes(recipient.id) &&
+        !(recipient.exclusions || []).includes(giver.id);
+
+      if (relinkValid) {
+        // Re-link A -> C; A's envelope changes, so reset it if it was opened
+        await supabaseAdmin
+          .from('participants')
+          .update({
+            assignee_id: recipient.id,
+            ...(giver.has_revealed ? { has_revealed: false } : {}),
+          })
+          .eq('id', giver.id);
+
+        // Defensive: clear any other rows still pointing at the removed participant
+        await supabaseAdmin
+          .from('participants')
+          .update({ assignee_id: null })
+          .eq('assignee_id', participantId)
+          .neq('id', giver.id);
+      } else {
+        // A missing edge or exclusion rules block the re-link — redraw instead
+        effectiveMode = 'redraw';
+      }
+    }
+
+    if (effectiveMode === 'redraw') {
+      const nodes = remaining.map((p) => ({
+        id: p.id,
+        exclusions: (p.exclusions || []).filter((id) => id !== participantId),
+      }));
+
+      const newAssignments = generateSecretSantaMatches(nodes);
+      if (!newAssignments) {
+        return {
+          error:
+            'Could not remove this participant: no valid draw exists for the remaining participants.',
+        };
+      }
+
+      // Clear all references to the removed participant, then apply new assignments
+      await supabaseAdmin
+        .from('participants')
+        .update({ assignee_id: null })
+        .eq('assignee_id', participantId);
+
+      for (const p of remaining) {
+        const newAssignee = newAssignments[p.id] || null;
+        if (newAssignee !== p.assignee_id) {
+          await supabaseAdmin
+            .from('participants')
+            .update({
+              assignee_id: newAssignee,
+              ...(p.has_revealed ? { has_revealed: false } : {}),
+            })
+            .eq('id', p.id);
+        }
+      }
+      }
+    }
+
+    // 6. Delete everything tied to the removed participant
+    await supabaseAdmin.from('wishlist_items').delete().eq('participant_id', participantId);
+    await supabaseAdmin
+      .from('participant_credentials')
+      .delete()
+      .eq('participant_id', participantId);
+    await supabaseAdmin
+      .from('webauthn_challenges')
+      .delete()
+      .eq('participant_id', participantId);
+
+    // 7. Delete the participant row
+    const { error: delError } = await supabaseAdmin
+      .from('participants')
+      .delete()
+      .eq('id', participantId)
+      .eq('room_id', room.id);
+
+    if (delError) {
+      console.error('removeParticipant delete error:', delError);
+      return { error: 'Failed to remove the participant.' };
+    }
+
+    return { success: true, mode: isDrawn ? effectiveMode : 'none', name: target.name };
+  } catch (err) {
+    console.error('removeParticipant error:', err);
+    return { error: 'Failed to remove the participant. Please try again.' };
+  }
+}
+
+/**
+ * Organizer-only: returns the room's current exclusion pairs.
+ */
+export async function getRoomExclusions({ slug, adminToken }) {
+  try {
+    const { data: room } = await supabaseAdmin
+      .from('rooms')
+      .select('id, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (!room || room.admin_token !== adminToken) {
+      return { error: 'Invalid organizer token.' };
+    }
+
+    const { data: participants, error } = await supabaseAdmin
+      .from('participants')
+      .select('id, name, exclusions')
+      .eq('room_id', room.id)
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+
+    const pairs = [];
+    const seen = new Set();
+    for (const p of participants) {
+      for (const exId of p.exclusions || []) {
+        const key = [p.id, exId].sort().join('::');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const other = participants.find((x) => x.id === exId);
+        if (other) {
+          pairs.push({ idA: p.id, nameA: p.name, idB: other.id, nameB: other.name });
+        }
+      }
+    }
+
+    return { pairs };
+  } catch (err) {
+    console.error('getRoomExclusions error:', err);
+    return { error: 'Unable to load exclusion rules.' };
+  }
+}
+
+/**
+ * Organizer-only: blocks two participants from drawing each other (mutual
+ * exclusion). If the current draw violates the new rule, matches are redrawn
+ * to respect it (changed envelopes are reset). Rejects the rule entirely if
+ * no valid draw exists with it.
+ */
+export async function addExclusionRule({ slug, adminToken, participantIdA, participantIdB }) {
+  try {
+    if (!participantIdA || !participantIdB || participantIdA === participantIdB) {
+      return { error: 'Select two different participants.' };
+    }
+
+    const { data: room } = await supabaseAdmin
+      .from('rooms')
+      .select('id, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (!room || room.admin_token !== adminToken) {
+      return { error: 'Invalid organizer token.' };
+    }
+
+    // Exclusion rules are only editable before the draw
+    if (await getRoomDrawnStatus(room.id)) {
+      return { error: 'Names have already been drawn. Exclusion rules are locked.' };
+    }
+
+    const { data: participants, error: partError } = await supabaseAdmin
+      .from('participants')
+      .select('id, name, exclusions, assignee_id, has_revealed')
+      .eq('room_id', room.id);
+
+    if (partError) throw partError;
+
+    const a = participants.find((p) => p.id === participantIdA);
+    const b = participants.find((p) => p.id === participantIdB);
+    if (!a || !b) return { error: 'Participant not found.' };
+
+    if (
+      (a.exclusions || []).includes(b.id) ||
+      (b.exclusions || []).includes(a.id)
+    ) {
+      return { error: 'This pair is already blocked.' };
+    }
+
+    // Tentative mutual exclusion
+    const withRule = participants.map((p) => {
+      if (p.id === a.id) return { ...p, exclusions: [...(p.exclusions || []), b.id] };
+      if (p.id === b.id) return { ...p, exclusions: [...(p.exclusions || []), a.id] };
+      return p;
+    });
+
+    // Does the current draw violate the new rule?
+    const violatesCurrentDraw = a.assignee_id === b.id || b.assignee_id === a.id;
+
+    if (violatesCurrentDraw) {
+      const newAssignments = generateSecretSantaMatches(
+        withRule.map((p) => ({ id: p.id, exclusions: p.exclusions }))
+      );
+
+      if (!newAssignments) {
+        return {
+          error:
+            'Blocking this pair makes a valid draw impossible. Remove another rule first.',
+        };
+      }
+
+      // Save the rule and the redrawn assignments (reset changed envelopes)
+      for (const p of withRule) {
+        const changed = newAssignments[p.id] !== p.assignee_id;
+        const needsExclusionUpdate = p.id === a.id || p.id === b.id;
+
+        if (changed || needsExclusionUpdate) {
+          await supabaseAdmin
+            .from('participants')
+            .update({
+              ...(changed
+                ? {
+                  assignee_id: newAssignments[p.id],
+                  ...(p.has_revealed ? { has_revealed: false } : {}),
+                }
+                : {}),
+              ...(needsExclusionUpdate ? { exclusions: p.exclusions } : {}),
+            })
+            .eq('id', p.id);
+        }
+      }
+
+      return {
+        success: true,
+        redrew: true,
+        notice: `${a.name} and ${b.name} can no longer draw each other. Matches were redrawn to respect the new rule.`,
+      };
+    }
+
+    // No draw change needed — just save the mutual exclusion
+    await supabaseAdmin
+      .from('participants')
+      .update({ exclusions: withRule.find((p) => p.id === a.id).exclusions })
+      .eq('id', a.id);
+    await supabaseAdmin
+      .from('participants')
+      .update({ exclusions: withRule.find((p) => p.id === b.id).exclusions })
+      .eq('id', b.id);
+
+    return {
+      success: true,
+      redrew: false,
+      notice: `${a.name} and ${b.name} can no longer draw each other.`,
+    };
+  } catch (err) {
+    console.error('addExclusionRule error:', err);
+    return { error: 'Failed to add exclusion rule. Please try again.' };
+  }
+}
+
+/**
+ * Organizer-only: removes the mutual exclusion between two participants.
+ * Removing a rule only relaxes constraints, so the current draw always
+ * remains valid and no redraw is needed.
+ */
+export async function removeExclusionRule({ slug, adminToken, participantIdA, participantIdB }) {
+  try {
+    const { data: room } = await supabaseAdmin
+      .from('rooms')
+      .select('id, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (!room || room.admin_token !== adminToken) {
+      return { error: 'Invalid organizer token.' };
+    }
+
+    // Exclusion rules are only editable before the draw
+    if (await getRoomDrawnStatus(room.id)) {
+      return { error: 'Names have already been drawn. Exclusion rules are locked.' };
+    }
+
+    const { data: participants, error } = await supabaseAdmin
+      .from('participants')
+      .select('id, exclusions')
+      .eq('room_id', room.id);
+
+    if (error) throw error;
+
+    const a = participants.find((p) => p.id === participantIdA);
+    const b = participants.find((p) => p.id === participantIdB);
+    if (!a || !b) return { error: 'Participant not found.' };
+
+    await supabaseAdmin
+      .from('participants')
+      .update({ exclusions: (a.exclusions || []).filter((id) => id !== b.id) })
+      .eq('id', a.id);
+    await supabaseAdmin
+      .from('participants')
+      .update({ exclusions: (b.exclusions || []).filter((id) => id !== a.id) })
+      .eq('id', b.id);
+
+    return { success: true };
+  } catch (err) {
+    console.error('removeExclusionRule error:', err);
+    return { error: 'Failed to remove exclusion rule. Please try again.' };
+  }
+}
+
+/**
+ * Organizer-only: runs the Secret Santa draw for a room that hasn't been
+ * drawn yet. Requires at least 2 participants and a valid draw under the
+ * room's exclusion rules. Sets is_drawn = true and resets all envelopes.
+ */
+export async function drawNames({ slug, adminToken }) {
+  try {
+    // 1. Fetch room and verify organizer token
+    const { data: room, error: roomError } = await supabaseAdmin
+      .from('rooms')
+      .select('id, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (roomError || !room) return { error: 'Room not found.' };
+    if (!adminToken || room.admin_token !== adminToken) {
+      return { error: 'Invalid organizer token.' };
+    }
+
+    // 2. Only draw once
+    if (await getRoomDrawnStatus(room.id)) {
+      return { error: 'Names have already been drawn.' };
+    }
+
+    // 3. Fetch participants
+    const { data: participants, error: partError } = await supabaseAdmin
+      .from('participants')
+      .select('id, name, exclusions')
+      .eq('room_id', room.id);
+
+    if (partError) throw partError;
+
+    if (participants.length < 2) {
+      return { error: 'Add at least 2 participants before drawing names.' };
+    }
+
+    // 4. Compute assignments (mutual pair for 2 people, backtracking for 3+)
+    let assignments;
+    if (participants.length === 2) {
+      const [p1, p2] = participants;
+      if (
+        (p1.exclusions || []).includes(p2.id) ||
+        (p2.exclusions || []).includes(p1.id)
+      ) {
+        return {
+          error:
+            'The 2 participants are blocked from drawing each other. Remove the exclusion or add a participant.',
+        };
+      }
+      assignments = {
+        [p1.id]: p2.id,
+        [p2.id]: p1.id,
+      };
+    } else {
+      assignments = generateSecretSantaMatches(participants);
+      if (!assignments) {
+        return {
+          error:
+            'No valid draw exists with these exclusion rules. Remove an exclusion or add a participant.',
+        };
+      }
+    }
+
+    // 5. Save assignments and reset envelopes
+    for (const p of participants) {
+      await supabaseAdmin
+        .from('participants')
+        .update({ assignee_id: assignments[p.id], has_revealed: false })
+        .eq('id', p.id);
+    }
+
+    // 6. Mark the room as drawn
+    await supabaseAdmin.from('rooms').update({ is_drawn: true }).eq('id', room.id);
+
+    return { success: true, notice: 'Names have been drawn!' };
+  } catch (err) {
+    console.error('drawNames error:', err);
+    return { error: 'Failed to draw names. Please try again.' };
+  }
+}
+
+/**
  * Adds a new participant to an existing room and integrates them into
  * the Secret Santa match assignments.
  *
@@ -1102,6 +1578,45 @@ export async function addParticipantToRoom({
 
     const newParticipantId = crypto.randomUUID();
     const newExclusions = exclusionParticipantId ? [exclusionParticipantId] : [];
+
+    // Undrawn rooms: just add the participant without touching assignments —
+    // the organizer draws names later. Apply the requested exclusion, if any.
+    if (!(await getRoomDrawnStatus(room.id))) {
+      const { data: inserted, error: insertError } = await supabaseAdmin
+        .from('participants')
+        .insert({
+          id: newParticipantId,
+          room_id: room.id,
+          name: trimmedName,
+          exclusions: newExclusions,
+          assignee_id: null,
+          dislikes: '',
+          has_revealed: false,
+        })
+        .select('id, name')
+        .single();
+
+      if (insertError) throw insertError;
+
+      if (exclusionParticipantId) {
+        const otherPerson = participants.find((p) => p.id === exclusionParticipantId);
+        if (otherPerson) {
+          const updatedExclusions = Array.from(
+            new Set([...(otherPerson.exclusions || []), newParticipantId])
+          );
+          await supabaseAdmin
+            .from('participants')
+            .update({ exclusions: updatedExclusions })
+            .eq('id', otherPerson.id);
+        }
+      }
+
+      return {
+        success: true,
+        participant: inserted,
+        notice: `Added ${trimmedName} to the room. Draw names whenever you're ready!`,
+      };
+    }
 
     // Helper to evaluate if a directed edge U -> V can accept the new participant
     const canInsertIntoEdge = (giver, recipient) => {
