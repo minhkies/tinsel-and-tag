@@ -413,8 +413,9 @@ export async function getUnlockedDashboard(slug) {
     // 2. Fetch my structured wishlist items
     const { data: myWishlist } = await supabaseAdmin
       .from('wishlist_items')
-      .select('id, title, url, note')
+      .select('id, title, url, note, position')
       .eq('participant_id', me.id)
+      .order('position', { ascending: true })
       .order('created_at', { ascending: true });
 
     // 3. Fetch assigned recipient + their wishlist items
@@ -426,8 +427,9 @@ export async function getUnlockedDashboard(slug) {
 
     const { data: recipientWishlist } = await supabaseAdmin
       .from('wishlist_items')
-      .select('id, title, url, note')
+      .select('id, title, url, note, position')
       .eq('participant_id', me.assignee_id)
+      .order('position', { ascending: true })
       .order('created_at', { ascending: true });
 
     return {
@@ -476,6 +478,17 @@ export async function addWishlistItem(slug, { title, url, note }) {
   if (!participantId) return { error: 'PIN_RESET' };
   if (!title?.trim()) return { error: 'Item title is required.' };
 
+  // Determine next position value
+  const { data: lastItem } = await supabaseAdmin
+    .from('wishlist_items')
+    .select('position')
+    .eq('participant_id', participantId)
+    .order('position', { ascending: false })
+    .limit(1)
+    .single();
+
+  const nextPosition = (lastItem?.position ?? 0) + 1;
+
   const { data, error } = await supabaseAdmin
     .from('wishlist_items')
     .insert({
@@ -483,11 +496,15 @@ export async function addWishlistItem(slug, { title, url, note }) {
       title: title.trim(),
       url: normalizeUrl(url),
       note: (note || '').trim(),
+      position: nextPosition,
     })
-    .select('id, title, url, note')
+    .select('id, title, url, note, position')
     .single();
 
-  if (error) return { error: 'Failed to add wishlist item.' };
+  if (error) {
+    console.error('addWishlistItem insert error:', error);
+    return { error: 'Failed to add wishlist item.' };
+  }
   return { item: data };
 }
 
@@ -508,7 +525,7 @@ export async function updateWishlistItem(slug, itemId, { title, url, note }) {
     })
     .eq('id', itemId)
     .eq('participant_id', participantId) // Ownership check
-    .select('id, title, url, note')
+    .select('id, title, url, note, position')
     .single();
 
   if (error) return { error: 'Failed to update item.' };
@@ -529,6 +546,58 @@ export async function deleteWishlistItem(slug, itemId) {
     .eq('participant_id', participantId); // Ownership check
 
   if (error) return { error: 'Failed to delete item.' };
+  return { success: true };
+}
+
+/**
+ * Reorders the signed-in participant's wishlist so it matches the order
+ * of IDs provided (top to bottom). Every ID must be owned by the
+ * participant and the list must contain their complete current wishlist.
+ */
+export async function reorderWishlistItems(slug, orderedIds) {
+  const participantId = await getAuthenticatedParticipantId(slug, true);
+  if (!participantId) return { error: 'PIN_RESET' };
+
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    return { error: 'Nothing to reorder.' };
+  }
+
+  const uniqueIds = new Set(orderedIds);
+  if (uniqueIds.size !== orderedIds.length) {
+    return { error: 'Invalid wishlist order.' };
+  }
+
+  // Fetch the participant's current item ids to enforce ownership & completeness
+  const { data: owned, error: fetchError } = await supabaseAdmin
+    .from('wishlist_items')
+    .select('id')
+    .eq('participant_id', participantId);
+
+  if (fetchError) return { error: 'Failed to reorder your wishlist. Please try again.' };
+
+  const ownedIds = new Set((owned || []).map((item) => item.id));
+  const allOwned = orderedIds.every((id) => ownedIds.has(id));
+  const isComplete = ownedIds.size === uniqueIds.size;
+
+  if (!allOwned || !isComplete) {
+    return { error: 'Wishlist order is out of date. Refresh and try again.' };
+  }
+
+  // Persist each item's new position (1-based, top to bottom)
+  const results = await Promise.all(
+    orderedIds.map((id, index) =>
+      supabaseAdmin
+        .from('wishlist_items')
+        .update({ position: index + 1 })
+        .eq('id', id)
+        .eq('participant_id', participantId)
+    )
+  );
+
+  if (results.some((r) => r.error)) {
+    return { error: 'Failed to reorder your wishlist. Please try again.' };
+  }
+
   return { success: true };
 }
 
