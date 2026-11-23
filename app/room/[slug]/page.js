@@ -11,14 +11,10 @@ import {
     Copy,
     Check,
     Plus,
-    Trash2,
     Sparkles,
     Calendar,
     DollarSign,
     ArrowLeft,
-    ArrowUp,
-    ArrowDown,
-    ArrowUpDown,
     Eye,
     EyeOff,
     Heart,
@@ -31,11 +27,27 @@ import {
     X,
     ExternalLink,
     Link2,
-    Pencil,
     Tag,
     Loader2,
+    GripVertical,
 } from 'lucide-react';
+import {
+    DndContext,
+    closestCenter,
+    PointerSensor,
+    TouchSensor,
+    KeyboardSensor,
+    useSensor,
+    useSensors,
+} from '@dnd-kit/core';
+import {
+    SortableContext,
+    verticalListSortingStrategy,
+    arrayMove,
+    sortableKeyboardCoordinates,
+} from '@dnd-kit/sortable';
 import PinInput from '@/components/PinInput';
+import WishlistItemRow from '@/components/WishlistItemRow';
 import { useLanguage, LanguageToggle } from '@/lib/LanguageContext';
 import {
     getRoomLobby,
@@ -474,17 +486,24 @@ function RoomContent() {
         triggerSavedBadge();
     };
 
-    const handleMoveItem = async (itemId, direction) => {
+    // Drag-and-drop sensors: mouse drags after 8px of movement, touch drags
+    // after a short hold (so page scrolling still works), plus keyboard support.
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+        useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    );
+
+    const handleDragEnd = async (event) => {
+        const { active, over } = event;
+        if (!over || active.id === over.id) return;
+
         const wishlist = dashboard?.me?.wishlist || [];
-        const currentIdx = wishlist.findIndex((item) => item.id === itemId);
-        if (currentIdx < 0) return;
+        const oldIndex = wishlist.findIndex((item) => item.id === active.id);
+        const newIndex = wishlist.findIndex((item) => item.id === over.id);
+        if (oldIndex < 0 || newIndex < 0) return;
 
-        const targetIdx = direction === 'up' ? currentIdx - 1 : currentIdx + 1;
-        if (targetIdx < 0 || targetIdx >= wishlist.length) return;
-
-        const reordered = [...wishlist];
-        const [moved] = reordered.splice(currentIdx, 1);
-        reordered.splice(targetIdx, 0, moved);
+        const reordered = arrayMove(wishlist, oldIndex, newIndex);
 
         // Optimistic reorder for instant feedback
         setDashboard((prev) => ({
@@ -1205,14 +1224,23 @@ function RoomContent() {
 
                                     {dashboard.me.wishlist.length >= 2 && (
                                         <p className="flex items-center gap-1.5 text-[11px] text-[#A8A29E] -mt-1 mb-2.5">
-                                            <ArrowUpDown className="w-3 h-3" />
+                                            <GripVertical className="w-3 h-3" />
                                             <span>{t('dashboard.reorderHint')}</span>
                                         </p>
                                     )}
 
                                     {dashboard.me.wishlist.length > 0 && (
-                                        <div className="space-y-2.5 mb-4">
-                                            {dashboard.me.wishlist.map((item, idx) =>
+                                        <DndContext
+                                            sensors={sensors}
+                                            collisionDetection={closestCenter}
+                                            onDragEnd={handleDragEnd}
+                                        >
+                                            <SortableContext
+                                                items={dashboard.me.wishlist.map((item) => item.id)}
+                                                strategy={verticalListSortingStrategy}
+                                            >
+                                                <div className="space-y-2.5 mb-4">
+                                                    {dashboard.me.wishlist.map((item, idx) =>
                                                 editingItemId === item.id ? (
                                                     <div
                                                         key={item.id}
@@ -1279,89 +1307,25 @@ function RoomContent() {
                                                         </div>
                                                     </div>
                                                 ) : (
-                                                    <div
+                                                    <WishlistItemRow
                                                         key={item.id}
-                                                        className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] flex items-center justify-between gap-3"
-                                                    >
-                                                        <div className="min-w-0 flex-1 flex items-start gap-2.5">
-                                                            <span className="w-5 h-5 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                                                                {idx + 1}
-                                                            </span>
-                                                            <div className="min-w-0 flex-1">
-                                                                <div className="flex flex-wrap items-center gap-2">
-                                                                    <span className="font-semibold text-sm text-[#1C1917]">
-                                                                        {item.title}
-                                                                    </span>
-                                                                    {item.note && (
-                                                                        <span className="px-2 py-0.5 rounded-md bg-white border border-[#E7E5E0] text-[#57534E] text-xs font-medium">
-                                                                            {item.note}
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                {item.url && (
-                                                                    <a
-                                                                        href={item.url}
-                                                                        target="_blank"
-                                                                        rel="noopener noreferrer"
-                                                                        className="inline-flex items-center gap-1 text-xs font-medium text-[#1B4332] hover:underline mt-1"
-                                                                    >
-                                                                        <Link2 className="w-3 h-3" />
-                                                                        <span>{getDomainLabel(item.url)}</span>
-                                                                        <ExternalLink className="w-3 h-3" />
-                                                                    </a>
-                                                                )}
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="flex items-center gap-1 shrink-0">
-                                                            <div className="flex flex-col items-center mr-1 pr-1 border-r border-[#E7E5E0]">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleMoveItem(item.id, 'up')}
-                                                                    disabled={idx === 0}
-                                                                    title={t('dashboard.moveUp')}
-                                                                    aria-label={t('dashboard.moveUp')}
-                                                                    className="p-1 -my-0.5 rounded-md text-[#78716C] hover:text-[#1B4332] hover:bg-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[#78716C] transition cursor-pointer disabled:cursor-not-allowed"
-                                                                >
-                                                                    <ArrowUp className="w-4 h-4" />
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleMoveItem(item.id, 'down')}
-                                                                    disabled={idx === dashboard.me.wishlist.length - 1}
-                                                                    title={t('dashboard.moveDown')}
-                                                                    aria-label={t('dashboard.moveDown')}
-                                                                    className="p-1 -my-0.5 rounded-md text-[#78716C] hover:text-[#1B4332] hover:bg-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[#78716C] transition cursor-pointer disabled:cursor-not-allowed"
-                                                                >
-                                                                    <ArrowDown className="w-4 h-4" />
-                                                                </button>
-                                                            </div>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    setEditingItemId(item.id);
-                                                                    setEditItemDraft({
-                                                                        title: item.title,
-                                                                        url: item.url || '',
-                                                                        note: item.note || '',
-                                                                    });
-                                                                }}
-                                                                className="p-2 rounded-xl text-[#78716C] hover:text-[#1C1917] hover:bg-white cursor-pointer"
-                                                            >
-                                                                <Pencil className="w-4 h-4" />
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleDeleteItem(item.id)}
-                                                                className="p-2 rounded-xl text-[#78716C] hover:text-[#C84B31] hover:bg-[#FDF2F0] cursor-pointer"
-                                                            >
-                                                                <Trash2 className="w-4 h-4" />
-                                                            </button>
-                                                        </div>
-                                                    </div>
+                                                        item={item}
+                                                        index={idx}
+                                                        onEdit={(editedItem) => {
+                                                            setEditingItemId(editedItem.id);
+                                                            setEditItemDraft({
+                                                                title: editedItem.title,
+                                                                url: editedItem.url || '',
+                                                                note: editedItem.note || '',
+                                                            });
+                                                        }}
+                                                        onDelete={handleDeleteItem}
+                                                    />
                                                 )
                                             )}
-                                        </div>
+                                                </div>
+                                            </SortableContext>
+                                        </DndContext>
                                     )}
 
                                     {/* Add Item Form */}
