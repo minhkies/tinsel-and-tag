@@ -1,8 +1,15 @@
 'use server';
 
 import crypto from 'crypto';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { SignJWT, jwtVerify } from 'jose';
+import {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} from '@simplewebauthn/server';
+import { isoBase64URL } from '@simplewebauthn/server/helpers';
 import { supabaseAdmin } from '@/lib/supabase';
 
 // Secret key for signing HttpOnly room session cookies
@@ -110,6 +117,83 @@ async function getAuthenticatedParticipantId(slug, requirePin = false) {
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// 1b. WEBAUTHN (PASSKEY) HELPERS
+// ============================================================================
+
+const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Derives the WebAuthn relying-party config from the incoming request so the
+ * same code works on localhost (http://localhost:3000) and any production
+ * HTTPS domain — no hardcoded URLs. rpID is the host without a port.
+ */
+async function getWebAuthnConfig() {
+  const headerStore = await headers();
+  const host = (
+    headerStore.get('x-forwarded-host') ||
+    headerStore.get('host') ||
+    'localhost:3000'
+  ).trim();
+  const proto = (headerStore.get('x-forwarded-proto') || 'http').split(',')[0].trim();
+  const rpID = host.split(':')[0].toLowerCase();
+  const origin = `${proto}://${host}`;
+  return { rpID, origin };
+}
+
+/**
+ * Stores a fresh challenge for a participant + purpose. Replaces any previous
+ * challenge of the same kind and opportunistically prunes expired rows.
+ */
+async function saveWebAuthnChallenge(participantId, purpose, challenge) {
+  await supabaseAdmin
+    .from('webauthn_challenges')
+    .delete()
+    .eq('participant_id', participantId)
+    .eq('purpose', purpose);
+
+  await supabaseAdmin
+    .from('webauthn_challenges')
+    .delete()
+    .lt('expires_at', new Date().toISOString());
+
+  const { error } = await supabaseAdmin.from('webauthn_challenges').insert({
+    participant_id: participantId,
+    purpose,
+    challenge,
+    expires_at: new Date(Date.now() + WEBAUTHN_CHALLENGE_TTL_MS).toISOString(),
+  });
+
+  if (error) throw error;
+}
+
+/**
+ * Fetches and consumes (deletes) the latest challenge for a participant +
+ * purpose. Returns null if none exists or it has expired — challenges are
+ * single-use, so a used one can never be replayed.
+ */
+async function consumeWebAuthnChallenge(participantId, purpose) {
+  const { data, error } = await supabaseAdmin
+    .from('webauthn_challenges')
+    .select('challenge, expires_at')
+    .eq('participant_id', participantId)
+    .eq('purpose', purpose)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error || !data) return null;
+
+  await supabaseAdmin
+    .from('webauthn_challenges')
+    .delete()
+    .eq('participant_id', participantId)
+    .eq('purpose', purpose);
+
+  if (new Date(data.expires_at).getTime() < Date.now()) return null;
+  return data.challenge;
 }
 
 // ============================================================================
@@ -297,6 +381,19 @@ export async function getRoomLobby(slug) {
 
     if (partError) throw partError;
 
+    // Which participants have registered passkeys? Fetched separately and
+    // guarded so the lobby still loads if the passkey migration hasn't run yet.
+    const passkeyOwners = new Set();
+    try {
+      const { data: creds } = await supabaseAdmin
+        .from('participant_credentials')
+        .select('participant_id')
+        .in('participant_id', participants.map((p) => p.id));
+      for (const c of creds || []) passkeyOwners.add(c.participant_id);
+    } catch (err) {
+      console.error('participant_credentials fetch error:', err);
+    }
+
     let activeParticipantId = await getAuthenticatedParticipantId(slug, false);
     if (activeParticipantId) {
       const activeP = participants.find((p) => p.id === activeParticipantId);
@@ -322,6 +419,7 @@ export async function getRoomLobby(slug) {
         isClaimed: Boolean(p.pin_hash),
         pinHint: p.pin_hint || '',
         hasRevealed: Boolean(p.has_revealed),
+        hasPasskey: passkeyOwners.has(p.id),
       })),
       activeParticipantId,
     };
@@ -410,6 +508,20 @@ export async function getUnlockedDashboard(slug) {
       return { error: 'PIN_RESET', message: 'PIN was reset. Session locked.' };
     }
 
+    // Does this participant have any registered passkeys? Guarded so the
+    // dashboard still loads if the passkey migration hasn't run yet.
+    let hasPasskey = false;
+    try {
+      const { data: myCredentials } = await supabaseAdmin
+        .from('participant_credentials')
+        .select('id')
+        .eq('participant_id', me.id)
+        .limit(1);
+      hasPasskey = Boolean(myCredentials && myCredentials.length > 0);
+    } catch (err) {
+      console.error('participant_credentials fetch error:', err);
+    }
+
     // 2. Fetch my structured wishlist items
     const { data: myWishlist } = await supabaseAdmin
       .from('wishlist_items')
@@ -438,6 +550,7 @@ export async function getUnlockedDashboard(slug) {
         name: me.name,
         dislikes: me.dislikes || '',
         hasRevealed: Boolean(me.has_revealed),
+        hasPasskey,
         wishlist: myWishlist || [],
       },
       recipient: recipient
@@ -468,6 +581,237 @@ export async function markEnvelopeRevealed(slug) {
     .eq('id', participantId);
 
   return { success: true };
+}
+
+// ============================================================================
+// 3b. WEBAUTHN (PASSKEY) SERVER ACTIONS
+// ============================================================================
+
+/**
+ * Step 1 of passkey registration. Requires an active unlocked session for the
+ * participant (they just verified their PIN), then returns registration
+ * options for the browser's navigator.credentials.create() call.
+ */
+export async function generatePasskeyRegistrationOptions(slug, participantId) {
+  try {
+    const sessionId = await getAuthenticatedParticipantId(slug, true);
+    if (!sessionId) return { error: 'PIN_RESET' };
+    if (sessionId !== participantId) return { error: 'Unauthorized.' };
+
+    const { data: participant, error: fetchError } = await supabaseAdmin
+      .from('participants')
+      .select('id, name, participant_credentials(credential_id, transports)')
+      .eq('id', participantId)
+      .single();
+
+    if (fetchError || !participant) return { error: 'Participant not found.' };
+
+    const { rpID } = await getWebAuthnConfig();
+    const existing = participant.participant_credentials || [];
+
+    const options = await generateRegistrationOptions({
+      rpName: 'Tinsel & Tag',
+      rpID,
+      userID: new TextEncoder().encode(participantId),
+      userName: participant.name,
+      userDisplayName: participant.name,
+      attestationType: 'none',
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+      // Encourage platform biometrics (Face ID / Touch ID / Windows Hello /
+      // Android fingerprint) while still allowing security keys.
+      preferredAuthenticatorType: 'localDevice',
+      excludeCredentials: existing.map((c) => ({
+        id: c.credential_id,
+        transports: c.transports || undefined,
+      })),
+      supportedAlgorithmIDs: [-7, -257], // ES256, RS256
+    });
+
+    await saveWebAuthnChallenge(participantId, 'registration', options.challenge);
+    return { options };
+  } catch (err) {
+    console.error('generatePasskeyRegistrationOptions error:', err);
+    return { error: 'Failed to start passkey setup. Please try again.' };
+  }
+}
+
+/**
+ * Step 2 of passkey registration. Verifies the attestation response from the
+ * browser and persists the credential. Also requires the active PIN session.
+ */
+export async function verifyPasskeyRegistration(slug, participantId, registrationResponse) {
+  try {
+    const sessionId = await getAuthenticatedParticipantId(slug, true);
+    if (!sessionId) return { error: 'PIN_RESET' };
+    if (sessionId !== participantId) return { error: 'Unauthorized.' };
+
+    if (!registrationResponse || typeof registrationResponse !== 'object') {
+      return { error: 'Invalid passkey response.' };
+    }
+
+    const { rpID, origin } = await getWebAuthnConfig();
+    const challenge = await consumeWebAuthnChallenge(participantId, 'registration');
+    if (!challenge) {
+      return { error: 'Passkey setup expired. Please try again.' };
+    }
+
+    let verification;
+    try {
+      verification = await verifyRegistrationResponse({
+        response: registrationResponse,
+        expectedChallenge: challenge,
+        expectedOrigin: origin,
+        expectedRPID: rpID,
+      });
+    } catch (err) {
+      console.error('verifyRegistrationResponse error:', err);
+      return { error: 'Passkey verification failed. Please try again.' };
+    }
+
+    if (!verification.verified || !verification.registrationInfo) {
+      return { error: 'Passkey verification failed. Please try again.' };
+    }
+
+    const { credential, credentialDeviceType } = verification.registrationInfo;
+
+    const { error: insertError } = await supabaseAdmin
+      .from('participant_credentials')
+      .insert({
+        participant_id: participantId,
+        credential_id: credential.id,
+        public_key: isoBase64URL.fromBuffer(credential.publicKey),
+        counter: credential.counter,
+        transports: credential.transports || [],
+        device_type: credentialDeviceType || 'singleDevice',
+      });
+
+    if (insertError) {
+      console.error('participant_credentials insert error:', insertError);
+      return { error: 'Failed to save passkey. Please try again.' };
+    }
+
+    return { success: true };
+  } catch (err) {
+    console.error('verifyPasskeyRegistration error:', err);
+    return { error: 'Failed to save passkey. Please try again.' };
+  }
+}
+
+/**
+ * Step 1 of passkey login. No session required yet (the participant is still
+ * locked out). Returns authentication options listing the participant's
+ * registered credentials.
+ */
+export async function generatePasskeyAuthenticationOptions(slug, participantId) {
+  try {
+    const { data: credentials, error: fetchError } = await supabaseAdmin
+      .from('participant_credentials')
+      .select('credential_id, transports')
+      .eq('participant_id', participantId);
+
+    if (fetchError) return { error: 'Passkey login unavailable.' };
+    if (!credentials || credentials.length === 0) return { error: 'NO_PASSKEY' };
+
+    const { rpID } = await getWebAuthnConfig();
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: credentials.map((c) => ({
+        id: c.credential_id,
+        transports: c.transports || undefined,
+      })),
+      userVerification: 'preferred',
+    });
+
+    await saveWebAuthnChallenge(participantId, 'authentication', options.challenge);
+    return { options };
+  } catch (err) {
+    console.error('generatePasskeyAuthenticationOptions error:', err);
+    return { error: 'Failed to start passkey login. Please try again.' };
+  }
+}
+
+/**
+ * Step 2 of passkey login. Verifies the biometric assertion, updates the
+ * signature counter, and — on success — sets the same session cookie and
+ * returns the same dashboard payload as a successful PIN unlock.
+ */
+export async function verifyPasskeyAuthentication(slug, participantId, authenticationResponse) {
+  try {
+    if (!authenticationResponse || typeof authenticationResponse !== 'object') {
+      return { error: 'Invalid passkey response.' };
+    }
+
+    const credentialId = authenticationResponse.id;
+    const { data: credential, error: credError } = await supabaseAdmin
+      .from('participant_credentials')
+      .select('credential_id, public_key, counter, transports')
+      .eq('participant_id', participantId)
+      .eq('credential_id', credentialId)
+      .single();
+
+    if (credError || !credential) {
+      return { error: 'This passkey is not registered for this participant.' };
+    }
+
+    const { rpID, origin } = await getWebAuthnConfig();
+    const challenge = await consumeWebAuthnChallenge(participantId, 'authentication');
+    if (!challenge) {
+      return { error: 'Passkey login expired. Please try again.' };
+    }
+
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response: authenticationResponse,
+        expectedChallenge: challenge,
+        expectedOrigin: origin,
+        expectedRPID: rpID,
+        credential: {
+          id: credential.credential_id,
+          publicKey: isoBase64URL.toBuffer(credential.public_key),
+          counter: credential.counter,
+          transports: credential.transports || undefined,
+        },
+        requireUserVerification: true,
+      });
+    } catch (err) {
+      console.error('verifyAuthenticationResponse error:', err);
+      return { error: 'Passkey verification failed. Please use your PIN.' };
+    }
+
+    if (!verification.verified || !verification.authenticationInfo) {
+      return { error: 'Passkey verification failed. Please use your PIN.' };
+    }
+
+    // Update the signature counter to prevent replay of older signatures
+    await supabaseAdmin
+      .from('participant_credentials')
+      .update({ counter: verification.authenticationInfo.newCounter })
+      .eq('credential_id', credential.credential_id)
+      .eq('participant_id', participantId);
+
+    // The spot must still be claimed (PIN set) — after an organizer PIN reset,
+    // passkey login is disabled until the participant sets a new PIN.
+    const { data: participant, error: partError } = await supabaseAdmin
+      .from('participants')
+      .select('id, pin_hash')
+      .eq('id', participantId)
+      .single();
+
+    if (partError || !participant || !participant.pin_hash) {
+      return { error: 'Passkey login unavailable. Please use your PIN.' };
+    }
+
+    await setRoomSessionCookie(slug, participant.id);
+    return await getUnlockedDashboard(slug);
+  } catch (err) {
+    console.error('verifyPasskeyAuthentication error:', err);
+    return { error: 'Passkey login failed. Please use your PIN.' };
+  }
 }
 
 /**
@@ -686,6 +1030,13 @@ export async function organizerResetPin({ slug, adminToken, participantId }) {
     .eq('room_id', room.id);
 
   if (error) return { error: 'Failed to reset PIN.' };
+
+  // A PIN reset wipes all access to the spot: remove registered passkeys so
+  // the previous holder cannot unlock with biometrics after the reset.
+  await supabaseAdmin
+    .from('participant_credentials')
+    .delete()
+    .eq('participant_id', participantId);
 
   // If the organizer's active session is for this participant, delete the cookie
   const activeParticipantId = await getAuthenticatedParticipantId(slug, false);

@@ -30,7 +30,13 @@ import {
     Tag,
     Loader2,
     GripVertical,
+    Fingerprint,
 } from 'lucide-react';
+import {
+    startRegistration,
+    startAuthentication,
+    browserSupportsWebAuthn,
+} from '@simplewebauthn/browser';
 import {
     DndContext,
     closestCenter,
@@ -63,6 +69,10 @@ import {
     verifyOrganizerPin,
     organizerResetPin,
     addParticipantToRoom,
+    generatePasskeyRegistrationOptions,
+    verifyPasskeyRegistration,
+    generatePasskeyAuthenticationOptions,
+    verifyPasskeyAuthentication,
 } from '@/app/actions';
 
 const AVATAR_PALETTES = [
@@ -172,6 +182,26 @@ function RoomContent() {
     const [organizerPinBuffer, setOrganizerPinBuffer] = useState('');
     const [organizerPinError, setOrganizerPinError] = useState('');
     const [verifyingOrganizerPin, setVerifyingOrganizerPin] = useState(false);
+
+    // Passkey (WebAuthn) state
+    const [passkeySupported, setPasskeySupported] = useState(false);
+    const [showPasskeyPrompt, setShowPasskeyPrompt] = useState(false);
+    const [enablingPasskey, setEnablingPasskey] = useState(false);
+    const [unlockingWithPasskey, setUnlockingWithPasskey] = useState(false);
+
+    // Detect WebAuthn support once on mount. Hides all biometric UI in
+    // unsupported browsers (e.g., Instagram/Messenger in-app webviews).
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        let supported = false;
+        try {
+            supported = browserSupportsWebAuthn();
+        } catch {
+            supported = false;
+        }
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setPasskeySupported(supported);
+    }, []);
 
     const showToast = (msg) => {
         setToastMessage(msg);
@@ -353,6 +383,31 @@ function RoomContent() {
         setPinError('');
     };
 
+    // Shared entry point into the unlocked dashboard for both PIN and passkey logins
+    const enterDashboard = async (payload) => {
+        setDashboard(payload);
+        setDislikesDraft(payload.me.dislikes || '');
+        setIsCardRevealed(payload.me.hasRevealed);
+        setActiveParticipantId(payload.me.id);
+        setModalTarget(null);
+        setPinBuffer('');
+        setView('dashboard');
+        await loadRoomData();
+    };
+
+    // True when this device has already registered a passkey for the participant
+    // or the participant dismissed the setup prompt on this device.
+    const passkeyPromptSettled = (participantId) => {
+        try {
+            return Boolean(
+                localStorage.getItem(`tt_passkey_registered_${participantId}`) ||
+                localStorage.getItem(`tt_passkey_dismissed_${participantId}`)
+            );
+        } catch {
+            return false;
+        }
+    };
+
     const handlePinSubmit = async (submittedPin = pinBuffer) => {
         if (!modalTarget || submittedPin.length !== 4 || verifyingPin) return;
 
@@ -374,14 +429,127 @@ function RoomContent() {
             return;
         }
 
-        setDashboard(res);
-        setDislikesDraft(res.me.dislikes || '');
-        setIsCardRevealed(res.me.hasRevealed);
-        setActiveParticipantId(res.me.id);
-        setModalTarget(null);
-        setPinBuffer('');
-        setView('dashboard');
-        await loadRoomData();
+        await enterDashboard(res);
+
+        // Offer biometric setup after the first PIN unlock on this device
+        if (
+            passkeySupported &&
+            !res.me.hasPasskey &&
+            !passkeyPromptSettled(res.me.id)
+        ) {
+            setShowPasskeyPrompt(true);
+        }
+    };
+
+    // ==========================================================================
+    // PASSKEY REGISTRATION & LOGIN
+    // ==========================================================================
+    const handleEnablePasskey = async () => {
+        const participantId = dashboard?.me?.id;
+        if (!participantId || enablingPasskey) return;
+
+        setEnablingPasskey(true);
+        try {
+            const optsRes = await generatePasskeyRegistrationOptions(slug, participantId);
+            if (optsRes.error) {
+                if (optsRes.error === 'PIN_RESET') {
+                    setActiveParticipantId(null);
+                    setDashboard(null);
+                    setIsCardRevealed(false);
+                    setView('lobby');
+                    showToast(t('room.pinResetNotice'));
+                    return;
+                }
+                showToast(optsRes.error);
+                return;
+            }
+
+            const registrationResponse = await startRegistration(optsRes.options);
+
+            const verifyRes = await verifyPasskeyRegistration(slug, participantId, registrationResponse);
+            if (verifyRes.error) {
+                if (verifyRes.error === 'PIN_RESET') {
+                    setActiveParticipantId(null);
+                    setDashboard(null);
+                    setIsCardRevealed(false);
+                    setView('lobby');
+                    showToast(t('room.pinResetNotice'));
+                    return;
+                }
+                showToast(verifyRes.error);
+                return;
+            }
+
+            // Success: update local state and remember this device
+            setShowPasskeyPrompt(false);
+            setDashboard((prev) => ({
+                ...prev,
+                me: { ...prev.me, hasPasskey: true },
+            }));
+            setParticipants((prev) =>
+                prev.map((p) => (p.id === participantId ? { ...p, hasPasskey: true } : p))
+            );
+            try {
+                localStorage.setItem(`tt_passkey_registered_${participantId}`, '1');
+            } catch { /* storage unavailable */ }
+            showToast(t('passkey.enabledToast'));
+        } catch (err) {
+            if (err?.name === 'NotAllowedError') {
+                // User cancelled the system prompt — leave our banner up so they
+                // can try again or dismiss it themselves.
+            } else if (err?.name === 'InvalidStateError') {
+                // This device already has the credential (e.g., synced from another browser)
+                showToast(t('passkey.alreadyRegistered'));
+                setShowPasskeyPrompt(false);
+            } else {
+                console.error('startRegistration error:', err);
+                showToast(t('passkey.setupFailed'));
+            }
+        } finally {
+            setEnablingPasskey(false);
+        }
+    };
+
+    const handleDismissPasskeyPrompt = () => {
+        setShowPasskeyPrompt(false);
+        const participantId = dashboard?.me?.id;
+        if (participantId) {
+            try {
+                localStorage.setItem(`tt_passkey_dismissed_${participantId}`, '1');
+            } catch { /* storage unavailable */ }
+        }
+    };
+
+    const handlePasskeyUnlock = async (person) => {
+        if (!person || unlockingWithPasskey) return;
+
+        setUnlockingWithPasskey(true);
+        setPinError('');
+        try {
+            const optsRes = await generatePasskeyAuthenticationOptions(slug, person.id);
+            if (optsRes.error) {
+                setPinError(t('passkey.unavailable'));
+                return;
+            }
+
+            const authResponse = await startAuthentication(optsRes.options);
+
+            const verifyRes = await verifyPasskeyAuthentication(slug, person.id, authResponse);
+            if (verifyRes.error) {
+                setPinError(t('passkey.unavailable'));
+                return;
+            }
+
+            await enterDashboard(verifyRes);
+        } catch (err) {
+            if (err?.name !== 'NotAllowedError') {
+                // NotAllowedError = user cancelled the biometric prompt; PIN stays available
+                console.error('startAuthentication error:', err);
+                setPinError(t('passkey.unavailable'));
+            }
+        } finally {
+            setUnlockingWithPasskey(false);
+        }
     };
 
     // ==========================================================================
@@ -1040,10 +1208,66 @@ function RoomContent() {
                                     </p>
                                 </div>
                             </div>
-                            <span className="text-xs font-mono px-2.5 py-1 rounded-lg bg-[#FAF9F6] border border-[#E7E5E0] text-[#78716C]">
-                                PIN: ••••
-                            </span>
+                            <div className="flex items-center gap-2">
+                                {passkeySupported && !dashboard.me.hasPasskey && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPasskeyPrompt(true)}
+                                        className="text-[11px] font-semibold text-[#8C6D46] hover:text-[#1C1917] px-2.5 py-1 rounded-lg bg-[#D4A373]/15 flex items-center gap-1 cursor-pointer transition"
+                                    >
+                                        <Fingerprint className="w-3 h-3" />
+                                        <span>{t('passkey.enableShort')}</span>
+                                    </button>
+                                )}
+                                <span className="text-xs font-mono px-2.5 py-1 rounded-lg bg-[#FAF9F6] border border-[#E7E5E0] text-[#78716C]">
+                                    PIN: ••••
+                                </span>
+                            </div>
                         </div>
+
+                        {/* Passkey Registration Prompt */}
+                        {passkeySupported && !dashboard.me.hasPasskey && showPasskeyPrompt && (
+                            <div className="rounded-3xl bg-white border-2 border-[#D4A373]/60 p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4 shadow-2xs">
+                                <div className="w-11 h-11 rounded-2xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center shrink-0">
+                                    <Fingerprint className="w-6 h-6" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h3 className="font-bold text-[#1C1917] text-sm">
+                                        {t('passkey.promptTitle')}
+                                    </h3>
+                                    <p className="text-xs text-[#57534E] mt-1">
+                                        {t('passkey.promptDesc')}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={handleEnablePasskey}
+                                        disabled={enablingPasskey}
+                                        className="px-4 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:opacity-60 text-[#FAF9F6] text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                                    >
+                                        {enablingPasskey ? (
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D4A373]" />
+                                        ) : (
+                                            <Fingerprint className="w-3.5 h-3.5 text-[#D4A373]" />
+                                        )}
+                                        <span>
+                                            {enablingPasskey
+                                                ? t('passkey.settingUp')
+                                                : t('passkey.enableBtn')}
+                                        </span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleDismissPasskeyPrompt}
+                                        className="p-2 rounded-xl text-[#A8A29E] hover:text-[#1C1917] hover:bg-[#FAF9F6] cursor-pointer transition"
+                                        aria-label={t('common.cancel')}
+                                    >
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
 
                         {/* Secret Santa Reveal Envelope / Card */}
                         {!isCardRevealed ? (
@@ -1443,6 +1667,32 @@ function RoomContent() {
                                 ? t('pinModal.claimedDesc')
                                 : t('pinModal.unclaimedDesc')}
                         </p>
+
+                        {/* Biometric unlock — only for claimed spots with a registered passkey */}
+                        {modalTarget.isClaimed && modalTarget.hasPasskey && passkeySupported && (
+                            <div className="mb-5 space-y-3">
+                                <button
+                                    type="button"
+                                    onClick={() => handlePasskeyUnlock(modalTarget)}
+                                    disabled={unlockingWithPasskey || verifyingPin}
+                                    className="w-full py-3.5 px-5 rounded-2xl bg-[#1B4332] hover:bg-[#143326] disabled:opacity-60 text-[#FAF9F6] font-bold text-sm transition flex items-center justify-center gap-2 cursor-pointer"
+                                >
+                                    <Fingerprint className="w-4 h-4 text-[#D4A373]" />
+                                    <span>
+                                        {unlockingWithPasskey
+                                            ? t('passkey.verifying')
+                                            : t('passkey.unlockButton')}
+                                    </span>
+                                </button>
+                                <div className="flex items-center gap-3">
+                                    <span className="flex-1 h-px bg-[#E7E5E0]" />
+                                    <span className="text-[11px] font-semibold text-[#A8A29E]">
+                                        {t('passkey.orUsePin')}
+                                    </span>
+                                    <span className="flex-1 h-px bg-[#E7E5E0]" />
+                                </div>
+                            </div>
+                        )}
 
                         <div className="mb-5">
                             <PinInput
