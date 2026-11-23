@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
@@ -96,6 +96,15 @@ function RoomContent() {
     const [dashboard, setDashboard] = useState(null);
     const [isCardRevealed, setIsCardRevealed] = useState(false);
 
+    // Keep refs to avoid stale closures in polling interval
+    const viewRef = useRef(view);
+    const dashboardRef = useRef(dashboard);
+
+    useEffect(() => {
+        viewRef.current = view;
+        dashboardRef.current = dashboard;
+    }, [view, dashboard]);
+
     // Organizer token (read from localStorage or query param)
     const [adminToken, setAdminToken] = useState(() => {
         if (typeof window !== 'undefined' && slug) {
@@ -162,25 +171,38 @@ function RoomContent() {
 
         setRoom(lobbyRes.room);
         setParticipants(lobbyRes.participants);
-        setActiveParticipantId(lobbyRes.activeParticipantId);
 
-        // If user already has a valid HttpOnly session cookie, unlock dashboard automatically
-        if (lobbyRes.activeParticipantId) {
-            const dashRes = await getUnlockedDashboard(slug);
-            if (!dashRes.error) {
-                setDashboard(dashRes);
-                setDislikesDraft(dashRes.me.dislikes || '');
-                setIsCardRevealed(dashRes.me.hasRevealed);
-                setView('dashboard');
+        const currentView = viewRef.current;
+        const currentDash = dashboardRef.current;
+
+        // If currently inside the dashboard view, verify the active session is still valid
+        if (currentView === 'dashboard' && currentDash) {
+            const currentMyId = currentDash.me.id;
+            const currentParticipantInLobby = lobbyRes.participants.find((p) => p.id === currentMyId);
+
+            // If PIN was reset or participant spot is no longer claimed or cookie is gone
+            if (!lobbyRes.activeParticipantId || !currentParticipantInLobby?.isClaimed) {
+                setActiveParticipantId(null);
+                setDashboard(null);
+                setIsCardRevealed(false);
+                setView('lobby');
+                showToast(t('room.pinResetNotice'));
+            } else {
+                setActiveParticipantId(lobbyRes.activeParticipantId);
             }
+        } else {
+            // When in the lobby, participant is always locked out
+            setActiveParticipantId(null);
+            setDashboard(null);
         }
 
         setLoading(false);
-    }, [slug]);
+    }, [slug, t]);
 
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         loadRoomData();
+
         if (typeof window !== 'undefined' && slug) {
             const urlParams = new URLSearchParams(window.location.search);
             const queryAdmin = urlParams.get('admin');
@@ -191,6 +213,26 @@ function RoomContent() {
                 window.history.replaceState({}, '', cleanUrl);
             }
         }
+
+        // Auto-refresh interval (every 3 seconds) to detect PIN resets and room updates in real time
+        const intervalId = setInterval(() => {
+            if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+                loadRoomData();
+            }
+        }, 3000);
+
+        const handleVisibilityChange = () => {
+            if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+                loadRoomData();
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
     }, [slug, loadRoomData]);
 
     const formatDate = (isoDate) => {
@@ -281,11 +323,7 @@ function RoomContent() {
     // ==========================================================================
     // PIN CLAIM / UNLOCK
     // ==========================================================================
-    const handleSelectParticipant = async (person) => {
-        if (activeParticipantId === person.id && dashboard) {
-            setView('dashboard');
-            return;
-        }
+    const handleSelectParticipant = (person) => {
         setModalTarget(person);
         setPinBuffer('');
         setPinHintInput('');
@@ -345,6 +383,14 @@ function RoomContent() {
         setAddingItem(false);
 
         if (res.error) {
+            if (res.error === 'PIN_RESET') {
+                setActiveParticipantId(null);
+                setDashboard(null);
+                setIsCardRevealed(false);
+                setView('lobby');
+                showToast(t('room.pinResetNotice'));
+                return;
+            }
             showToast(res.error);
             return;
         }
@@ -367,6 +413,14 @@ function RoomContent() {
 
         const res = await updateWishlistItem(slug, itemId, editItemDraft);
         if (res.error) {
+            if (res.error === 'PIN_RESET') {
+                setActiveParticipantId(null);
+                setDashboard(null);
+                setIsCardRevealed(false);
+                setView('lobby');
+                showToast(t('room.pinResetNotice'));
+                return;
+            }
             showToast(res.error);
             return;
         }
@@ -387,6 +441,14 @@ function RoomContent() {
     const handleDeleteItem = async (itemId) => {
         const res = await deleteWishlistItem(slug, itemId);
         if (res.error) {
+            if (res.error === 'PIN_RESET') {
+                setActiveParticipantId(null);
+                setDashboard(null);
+                setIsCardRevealed(false);
+                setView('lobby');
+                showToast(t('room.pinResetNotice'));
+                return;
+            }
             showToast(res.error);
             return;
         }
@@ -403,21 +465,33 @@ function RoomContent() {
 
     const handleSaveDislikes = async () => {
         const res = await updateDislikes(slug, dislikesDraft);
-        if (!res.error) {
+        if (res?.error === 'PIN_RESET') {
+            setActiveParticipantId(null);
+            setDashboard(null);
+            setIsCardRevealed(false);
+            setView('lobby');
+            showToast(t('room.pinResetNotice'));
+            return;
+        }
+        if (!res?.error) {
             triggerSavedBadge();
         }
     };
 
-    const handleLockSession = async () => {
+    const handleBackToLobby = async () => {
         await lockParticipantSession(slug);
         setActiveParticipantId(null);
         setDashboard(null);
         setIsCardRevealed(false);
         setView('lobby');
-        showToast('Session locked.');
     };
 
+    const handleLockSession = handleBackToLobby;
+
     const handleResetPin = async (participantId, personName) => {
+        const isCurrentActive =
+            activeParticipantId === participantId || dashboard?.me?.id === participantId;
+
         const res = await organizerResetPin({
             slug,
             adminToken,
@@ -427,7 +501,17 @@ function RoomContent() {
             showToast(res.error);
             return;
         }
-        showToast(`Reset PIN for ${personName}.`);
+
+        if (isCurrentActive) {
+            await lockParticipantSession(slug);
+            setActiveParticipantId(null);
+            setDashboard(null);
+            setIsCardRevealed(false);
+            setView('lobby');
+            showToast(t('room.pinResetNotice'));
+        } else {
+            showToast(`Reset PIN for ${personName}.`);
+        }
         await loadRoomData();
     };
 
@@ -720,16 +804,6 @@ function RoomContent() {
                                         <Plus className="w-3.5 h-3.5" />
                                         <span>{t('room.addPersonBtn')}</span>
                                     </button>
-                                    {activeParticipantId && dashboard && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setView('dashboard')}
-                                            className="text-xs font-semibold text-[#1B4332] hover:underline flex items-center gap-1 cursor-pointer"
-                                        >
-                                            <span>{t('room.returnToMatch')}</span>
-                                            <ArrowLeft className="w-3.5 h-3.5 rotate-180" />
-                                        </button>
-                                    )}
                                 </div>
                             </div>
 
@@ -746,42 +820,25 @@ function RoomContent() {
                                     </div>
                                 )}
                                 {participants.map((person, idx) => {
-                                    const isCurrentSession = activeParticipantId === person.id;
-
                                     return (
                                         <button
                                             key={person.id}
                                             type="button"
                                             onClick={() => handleSelectParticipant(person)}
-                                            className={`p-4 rounded-2xl border text-left transition flex items-center justify-between group cursor-pointer ${isCurrentSession
-                                                    ? 'bg-[#1B4332] text-[#FAF9F6] border-[#1B4332] shadow-md'
-                                                    : 'bg-white hover:border-[#1B4332] border-[#E7E5E0] shadow-2xs'
-                                                }`}
+                                            className="p-4 rounded-2xl border text-left transition flex items-center justify-between group cursor-pointer bg-white hover:border-[#1B4332] border-[#E7E5E0] shadow-2xs"
                                         >
                                             <div className="flex items-center gap-3.5">
                                                 <div
-                                                    className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-sm ${isCurrentSession
-                                                            ? 'bg-[#D4A373] text-[#1C1917]'
-                                                            : AVATAR_PALETTES[idx % AVATAR_PALETTES.length]
-                                                        }`}
+                                                    className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-sm ${AVATAR_PALETTES[idx % AVATAR_PALETTES.length]}`}
                                                 >
                                                     {getInitials(person.name)}
                                                 </div>
                                                 <div>
-                                                    <div
-                                                        className={`font-bold text-base ${isCurrentSession
-                                                                ? 'text-[#FAF9F6]'
-                                                                : 'text-[#1C1917]'
-                                                            }`}
-                                                    >
+                                                    <div className="font-bold text-base text-[#1C1917]">
                                                         {person.name}
                                                     </div>
                                                     <div className="mt-0.5">
-                                                        {isCurrentSession ? (
-                                                            <span className="text-xs text-[#D8E2DC] font-medium">
-                                                                {t('room.activeSession')}
-                                                            </span>
-                                                        ) : person.isClaimed ? (
+                                                        {person.isClaimed ? (
                                                             <span className="text-xs text-[#78716C] flex items-center gap-1">
                                                                 <Lock className="w-3 h-3 text-[#8C6D46]" />
                                                                 {t('room.claimedTap')}
@@ -797,12 +854,10 @@ function RoomContent() {
                                             </div>
 
                                             <div
-                                                className={`w-8 h-8 rounded-full flex items-center justify-center ${isCurrentSession
-                                                        ? 'bg-white/15 text-[#FAF9F6]'
-                                                        : person.isClaimed
-                                                            ? 'bg-[#FAF9F6] text-[#78716C]'
-                                                            : 'bg-[#1B4332]/10 text-[#1B4332]'
-                                                    }`}
+                                                className={`w-8 h-8 rounded-full flex items-center justify-center ${person.isClaimed
+                                                    ? 'bg-[#FAF9F6] text-[#78716C]'
+                                                    : 'bg-[#1B4332]/10 text-[#1B4332]'
+                                                }`}
                                             >
                                                 {person.isClaimed ? (
                                                     <Lock className="w-4 h-4" />
@@ -855,7 +910,7 @@ function RoomContent() {
                         <div className="flex items-center justify-between">
                             <button
                                 type="button"
-                                onClick={() => setView('lobby')}
+                                onClick={handleBackToLobby}
                                 className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#57534E] hover:text-[#1C1917] cursor-pointer"
                             >
                                 <ArrowLeft className="w-4 h-4" />
@@ -864,7 +919,7 @@ function RoomContent() {
 
                             <button
                                 type="button"
-                                onClick={handleLockSession}
+                                onClick={handleBackToLobby}
                                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white border border-[#E7E5E0] hover:bg-[#FDF2F0] hover:text-[#C84B31] text-xs font-semibold text-[#57534E] transition cursor-pointer"
                             >
                                 <Lock className="w-3.5 h-3.5" />

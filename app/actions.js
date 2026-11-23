@@ -79,9 +79,11 @@ async function setRoomSessionCookie(slug, participantId) {
 }
 
 /**
- * Reads and verifies the current participantId from the room's HttpOnly cookie
+ * Reads and verifies the current participantId from the room's HttpOnly cookie.
+ * If requirePin is true, also verifies that the participant still has an active PIN
+ * (pin_hash is not null). If their PIN was reset by the organizer, clears the cookie.
  */
-async function getAuthenticatedParticipantId(slug) {
+async function getAuthenticatedParticipantId(slug, requirePin = false) {
   const cookieStore = await cookies();
   const token = cookieStore.get(`ss_session_${slug}`)?.value;
   if (!token) return null;
@@ -89,7 +91,22 @@ async function getAuthenticatedParticipantId(slug) {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET);
     if (payload.slug !== slug) return null;
-    return payload.participantId || null;
+    const participantId = payload.participantId || null;
+    if (!participantId) return null;
+
+    if (requirePin) {
+      const { data: p } = await supabaseAdmin
+        .from('participants')
+        .select('pin_hash')
+        .eq('id', participantId)
+        .single();
+      if (!p || !p.pin_hash) {
+        cookieStore.delete(`ss_session_${slug}`);
+        return null;
+      }
+    }
+
+    return participantId;
   } catch {
     return null;
   }
@@ -280,7 +297,16 @@ export async function getRoomLobby(slug) {
 
     if (partError) throw partError;
 
-    const activeParticipantId = await getAuthenticatedParticipantId(slug);
+    let activeParticipantId = await getAuthenticatedParticipantId(slug, false);
+    if (activeParticipantId) {
+      const activeP = participants.find((p) => p.id === activeParticipantId);
+      // If the participant no longer exists or their PIN was reset, revoke session
+      if (!activeP || !activeP.pin_hash) {
+        const cookieStore = await cookies();
+        cookieStore.delete(`ss_session_${slug}`);
+        activeParticipantId = null;
+      }
+    }
 
     return {
       room: {
@@ -366,19 +392,23 @@ export async function claimOrUnlockParticipant({
  */
 export async function getUnlockedDashboard(slug) {
   try {
-    const participantId = await getAuthenticatedParticipantId(slug);
+    const participantId = await getAuthenticatedParticipantId(slug, true);
     if (!participantId) {
-      return { error: 'Session locked. Please enter your 4-digit PIN.' };
+      return { error: 'PIN_RESET', message: 'Session locked. Please enter your 4-digit PIN.' };
     }
 
     // 1. Fetch active participant
     const { data: me, error: meError } = await supabaseAdmin
       .from('participants')
-      .select('id, name, assignee_id, dislikes, has_revealed')
+      .select('id, name, assignee_id, dislikes, has_revealed, pin_hash')
       .eq('id', participantId)
       .single();
 
-    if (meError || !me) return { error: 'Participant not found.' };
+    if (meError || !me || !me.pin_hash) {
+      const cookieStore = await cookies();
+      cookieStore.delete(`ss_session_${slug}`);
+      return { error: 'PIN_RESET', message: 'PIN was reset. Session locked.' };
+    }
 
     // 2. Fetch my structured wishlist items
     const { data: myWishlist } = await supabaseAdmin
@@ -427,8 +457,8 @@ export async function getUnlockedDashboard(slug) {
  * Marks that the user has opened their reveal envelope
  */
 export async function markEnvelopeRevealed(slug) {
-  const participantId = await getAuthenticatedParticipantId(slug);
-  if (!participantId) return { error: 'Unauthorized' };
+  const participantId = await getAuthenticatedParticipantId(slug, true);
+  if (!participantId) return { error: 'PIN_RESET' };
 
   await supabaseAdmin
     .from('participants')
@@ -442,8 +472,8 @@ export async function markEnvelopeRevealed(slug) {
  * Adds a new structured wishlist item (with optional link & note)
  */
 export async function addWishlistItem(slug, { title, url, note }) {
-  const participantId = await getAuthenticatedParticipantId(slug);
-  if (!participantId) return { error: 'Unauthorized' };
+  const participantId = await getAuthenticatedParticipantId(slug, true);
+  if (!participantId) return { error: 'PIN_RESET' };
   if (!title?.trim()) return { error: 'Item title is required.' };
 
   const { data, error } = await supabaseAdmin
@@ -465,8 +495,8 @@ export async function addWishlistItem(slug, { title, url, note }) {
  * Updates an existing wishlist item owned by the signed-in participant
  */
 export async function updateWishlistItem(slug, itemId, { title, url, note }) {
-  const participantId = await getAuthenticatedParticipantId(slug);
-  if (!participantId) return { error: 'Unauthorized' };
+  const participantId = await getAuthenticatedParticipantId(slug, true);
+  if (!participantId) return { error: 'PIN_RESET' };
   if (!title?.trim()) return { error: 'Item title is required.' };
 
   const { data, error } = await supabaseAdmin
@@ -489,8 +519,8 @@ export async function updateWishlistItem(slug, itemId, { title, url, note }) {
  * Deletes a wishlist item owned by the signed-in participant
  */
 export async function deleteWishlistItem(slug, itemId) {
-  const participantId = await getAuthenticatedParticipantId(slug);
-  if (!participantId) return { error: 'Unauthorized' };
+  const participantId = await getAuthenticatedParticipantId(slug, true);
+  if (!participantId) return { error: 'PIN_RESET' };
 
   const { error } = await supabaseAdmin
     .from('wishlist_items')
@@ -506,8 +536,8 @@ export async function deleteWishlistItem(slug, itemId) {
  * Updates the signed-in participant's allergies / dislikes
  */
 export async function updateDislikes(slug, dislikes) {
-  const participantId = await getAuthenticatedParticipantId(slug);
-  if (!participantId) return { error: 'Unauthorized' };
+  const participantId = await getAuthenticatedParticipantId(slug, true);
+  if (!participantId) return { error: 'PIN_RESET' };
 
   const { error } = await supabaseAdmin
     .from('participants')
@@ -548,6 +578,14 @@ export async function organizerResetPin({ slug, adminToken, participantId }) {
     .eq('room_id', room.id);
 
   if (error) return { error: 'Failed to reset PIN.' };
+
+  // If the organizer's active session is for this participant, delete the cookie
+  const activeParticipantId = await getAuthenticatedParticipantId(slug, false);
+  if (activeParticipantId === participantId) {
+    const cookieStore = await cookies();
+    cookieStore.delete(`ss_session_${slug}`);
+  }
+
   return { success: true };
 }
 
