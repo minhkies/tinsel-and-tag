@@ -15,11 +15,71 @@ const inter = Inter({
   display: "swap",
 });
 
+const siteUrl = (process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000').replace(/\/$/, '');
+
+const SITE_TITLE = 'Tinsel & Tag — Free Online Secret Santa Generator';
+const SITE_DESCRIPTION =
+  'Draw Secret Santa names for free — no accounts or emails. Smart exclusions, wishlists, and rooms protected by PIN or Face ID.';
+
+// NOTE: replace /og-image.png below with a 1200x630 PNG in /public when you
+// have one; until then the logo is used so social cards never break.
+const OG_IMAGE = '/logo.png';
+
 export const metadata = {
-  title: "Tinsel & Tag - Zero-account Secret Santa",
-  description: "Free, private, zero-account Secret Santa with smart exclusion rules and wishlists.",
+  metadataBase: new URL(`${siteUrl}/`),
+  title: {
+    default: SITE_TITLE,
+    template: '%s | Tinsel and Tag',
+  },
+  description: SITE_DESCRIPTION,
+  keywords: [
+    'secret santa generator',
+    'free secret santa',
+    'online secret santa',
+    'secret santa name picker',
+    'gift exchange organizer',
+    'christmas gift exchange',
+    'secret santa wishlist',
+  ],
+  authors: [{ name: 'Tinsel & Tag' }],
+  creator: 'Tinsel & Tag',
+  alternates: {
+    canonical: '/',
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+      'max-video-preview': -1,
+    },
+  },
+  openGraph: {
+    type: 'website',
+    url: siteUrl,
+    siteName: 'Tinsel & Tag',
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [
+      {
+        url: OG_IMAGE,
+        width: 1200,
+        height: 630,
+        alt: 'Tinsel & Tag — Free online Secret Santa generator',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE],
+  },
   icons: {
-    icon: "/logo.png",
+    icon: '/logo.png',
   },
 };
 

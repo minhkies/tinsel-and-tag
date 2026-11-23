@@ -21,9 +21,86 @@ import {
   ArrowLeft,
   LogIn,
   Check,
+  Link2,
+  Ban,
+  Heart,
+  Fingerprint,
 } from 'lucide-react';
 import { createRoom } from './actions.js';
 import { useLanguage, LanguageToggle } from '@/lib/LanguageContext';
+import JsonLdSchema from '@/components/JsonLdSchema';
+
+const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000').replace(/\/$/, '');
+
+// ---------------------------------------------------------------------------
+// JSON-LD structured data (static English, crawler-facing — Google reads the
+// default language version regardless of the visitor's selected UI language).
+// ---------------------------------------------------------------------------
+const JSONLD_FAQ_ITEMS = [
+  {
+    question: 'Do participants need to create an account or enter an email?',
+    answer:
+      'No. Tinsel & Tag is completely account-free. Create a room, share one link, and everyone picks their name and sets a 4-digit PIN. No emails, no downloads, no sign-ups.',
+  },
+  {
+    question: 'How does PIN and Face ID login work?',
+    answer:
+      'Each participant locks their Secret Santa match and wishlist behind a private 4-digit PIN. On supported devices you can optionally enable Face ID, Touch ID, Windows Hello, or Android fingerprint for one-tap unlocking.',
+  },
+  {
+    question: 'Can I add exclusions or manage my wishlist?',
+    answer:
+      'Yes. The organizer can block couples or housemates from drawing each other, and every participant can edit their own wishlist with gift ideas, product links, prices, and allergy notes.',
+  },
+  {
+    question: 'Is Tinsel and Tag free to use?',
+    answer:
+      'Yes, it is 100% free. There are no paid plans, accounts, or hidden fees.',
+  },
+  {
+    question: 'When are Secret Santa names drawn?',
+    answer:
+      'The organizer draws names whenever the group is ready, and can re-draw later if someone new joins or exclusion rules change.',
+  },
+];
+
+const JSONLD_GRAPH = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebApplication',
+      name: 'Tinsel & Tag',
+      url: `${SITE_URL}/`,
+      applicationCategory: 'UtilitiesApplication',
+      operatingSystem: 'Web browser',
+      browserRequirements: 'Requires JavaScript',
+      description:
+        'Free online Secret Santa generator. Draw names with smart exclusion rules, share wishlists with links, and protect every match with a PIN or passkey.',
+      offers: {
+        '@type': 'Offer',
+        price: '0',
+        priceCurrency: 'USD',
+      },
+      featureList: [
+        'Secret Santa name drawing',
+        'Smart exclusion rules for couples and housemates',
+        'Wishlists with product links and notes',
+        'PIN and passkey (Face ID / Touch ID) protected rooms',
+      ],
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: JSONLD_FAQ_ITEMS.map((item) => ({
+        '@type': 'Question',
+        name: item.question,
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: item.answer,
+        },
+      })),
+    },
+  ],
+};
 
 const AVATAR_PALETTES = [
   'bg-[#1B4332] text-[#FAF9F6]',
@@ -436,6 +513,152 @@ export default function OnboardingPage() {
                 )}
               </div>
             </div>
+
+            {/* ============================================================
+                SEO: STRUCTURED DATA + SEMANTIC SECTIONS (landing only)
+            ============================================================ */}
+            <JsonLdSchema data={JSONLD_GRAPH} />
+
+            {/* How It Works */}
+            <section aria-labelledby="how-it-works" className="pt-10 pb-4">
+              <h2 id="how-it-works" className="text-2xl font-extrabold tracking-tight text-[#1C1917]">
+                {t('seo.howItWorksTitle')}
+              </h2>
+              <p className="text-sm text-[#57534E] mt-1">
+                {t('seo.howItWorksSubtitle')}
+              </p>
+              <div className="mt-6 space-y-3">
+                <div className="flex items-start gap-4 p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <span className="w-8 h-8 rounded-full bg-[#1B4332] text-[#FAF9F6] text-sm font-bold flex items-center justify-center shrink-0">
+                    1
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-sm text-[#1C1917]">
+                      {t('seo.howCreateTitle')}
+                    </h3>
+                    <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                      {t('seo.howCreateDesc')}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <span className="w-8 h-8 rounded-full bg-[#1B4332] text-[#FAF9F6] text-sm font-bold flex items-center justify-center shrink-0">
+                    2
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-sm text-[#1C1917]">
+                      {t('seo.howInviteTitle')}
+                    </h3>
+                    <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                      {t('seo.howInviteDesc')}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <span className="w-8 h-8 rounded-full bg-[#1B4332] text-[#FAF9F6] text-sm font-bold flex items-center justify-center shrink-0">
+                    3
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-sm text-[#1C1917]">
+                      {t('seo.howDrawTitle')}
+                    </h3>
+                    <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                      {t('seo.howDrawDesc')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Key Features */}
+            <section aria-labelledby="key-features" className="py-8">
+              <h2 id="key-features" className="text-2xl font-extrabold tracking-tight text-[#1C1917]">
+                {t('seo.featuresTitle')}
+              </h2>
+              <p className="text-sm text-[#57534E] mt-1">
+                {t('seo.featuresSubtitle')}
+              </p>
+              <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <div className="w-9 h-9 rounded-xl bg-[#1B4332]/10 text-[#1B4332] flex items-center justify-center mb-2.5">
+                    <Users className="w-4 h-4" />
+                  </div>
+                  <h3 className="font-bold text-sm text-[#1C1917]">
+                    {t('seo.featureNoAccountsTitle')}
+                  </h3>
+                  <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                    {t('seo.featureNoAccountsDesc')}
+                  </p>
+                </div>
+                <div className="p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <div className="w-9 h-9 rounded-xl bg-[#C84B31]/15 text-[#C84B31] flex items-center justify-center mb-2.5">
+                    <Ban className="w-4 h-4" />
+                  </div>
+                  <h3 className="font-bold text-sm text-[#1C1917]">
+                    {t('seo.featureExclusionsTitle')}
+                  </h3>
+                  <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                    {t('seo.featureExclusionsDesc')}
+                  </p>
+                </div>
+                <div className="p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <div className="w-9 h-9 rounded-xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center mb-2.5">
+                    <Gift className="w-4 h-4" />
+                  </div>
+                  <h3 className="font-bold text-sm text-[#1C1917]">
+                    {t('seo.featureWishlistTitle')}
+                  </h3>
+                  <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                    {t('seo.featureWishlistDesc')}
+                  </p>
+                </div>
+                <div className="p-4 rounded-2xl bg-white border border-[#E7E5E0]">
+                  <div className="w-9 h-9 rounded-xl bg-[#2D5A4C]/15 text-[#2D5A4C] flex items-center justify-center mb-2.5">
+                    <Fingerprint className="w-4 h-4" />
+                  </div>
+                  <h3 className="font-bold text-sm text-[#1C1917]">
+                    {t('seo.featurePrivacyTitle')}
+                  </h3>
+                  <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                    {t('seo.featurePrivacyDesc')}
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            {/* FAQ */}
+            <section aria-labelledby="faq" className="py-8">
+              <h2 id="faq" className="text-2xl font-extrabold tracking-tight text-[#1C1917]">
+                {t('seo.faqTitle')}
+              </h2>
+              <p className="text-sm text-[#57534E] mt-1">
+                {t('seo.faqSubtitle')}
+              </p>
+              <div className="mt-6 space-y-2.5">
+                {[
+                  ['faq1Q', 'faq1A'],
+                  ['faq2Q', 'faq2A'],
+                  ['faq3Q', 'faq3A'],
+                  ['faq4Q', 'faq4A'],
+                  ['faq5Q', 'faq5A'],
+                ].map(([qKey, aKey]) => (
+                  <details
+                    key={qKey}
+                    className="group p-4 rounded-2xl bg-white border border-[#E7E5E0]"
+                  >
+                    <summary className="flex items-center justify-between gap-3 cursor-pointer list-none">
+                      <h3 className="font-bold text-sm text-[#1C1917]">
+                        {t(`seo.${qKey}`)}
+                      </h3>
+                      <ChevronDown className="w-4 h-4 text-[#78716C] group-open:rotate-180 transition shrink-0" />
+                    </summary>
+                    <p className="text-xs text-[#57534E] mt-2 leading-relaxed">
+                      {t(`seo.${aKey}`)}
+                    </p>
+                  </details>
+                ))}
+              </div>
+            </section>
           </div>
         )}
 
