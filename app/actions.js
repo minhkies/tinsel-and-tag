@@ -549,12 +549,51 @@ export async function updateDislikes(slug, dislikes) {
 }
 
 /**
- * Clears the HttpOnly session cookie ("Lock & Switch Person")
+ * Clears the HttpOnly session cookie (used when navigating back to lobby)
  */
 export async function lockParticipantSession(slug) {
   const cookieStore = await cookies();
   cookieStore.delete(`ss_session_${slug}`);
   return { success: true };
+}
+
+/**
+ * Verifies a 4-digit PIN against all claimed participants in the room.
+ * If any participant's PIN matches, returns the room's admin token so the
+ * caller can access organizer tools.
+ */
+export async function verifyOrganizerPin({ slug, pin }) {
+  try {
+    if (!/^\d{4}$/.test(String(pin))) {
+      return { error: 'PIN must be exactly 4 digits.' };
+    }
+
+    const { data: room } = await supabaseAdmin
+      .from('rooms')
+      .select('id, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (!room) return { error: 'Room not found.' };
+
+    // Fetch every claimed participant (those with a pin_hash)
+    const { data: claimed } = await supabaseAdmin
+      .from('participants')
+      .select('id, pin_hash')
+      .eq('room_id', room.id)
+      .not('pin_hash', 'is', null);
+
+    for (const p of claimed || []) {
+      if (verifyPin(pin, p.pin_hash)) {
+        return { success: true, adminToken: room.admin_token };
+      }
+    }
+
+    return { error: 'Incorrect PIN.' };
+  } catch (err) {
+    console.error('verifyOrganizerPin error:', err);
+    return { error: 'Unable to verify PIN.' };
+  }
 }
 
 /**

@@ -44,6 +44,7 @@ import {
     deleteWishlistItem,
     updateDislikes,
     lockParticipantSession,
+    verifyOrganizerPin,
     organizerResetPin,
     addParticipantToRoom,
 } from '@/app/actions';
@@ -149,6 +150,12 @@ function RoomContent() {
     const [savedBadge, setSavedBadge] = useState(false);
     const [copiedLink, setCopiedLink] = useState(false);
     const [toastMessage, setToastMessage] = useState('');
+
+    // Organizer PIN modal state
+    const [isOrganizerPinModalOpen, setIsOrganizerPinModalOpen] = useState(false);
+    const [organizerPinBuffer, setOrganizerPinBuffer] = useState('');
+    const [organizerPinError, setOrganizerPinError] = useState('');
+    const [verifyingOrganizerPin, setVerifyingOrganizerPin] = useState(false);
 
     const showToast = (msg) => {
         setToastMessage(msg);
@@ -486,7 +493,43 @@ function RoomContent() {
         setView('lobby');
     };
 
-    const handleLockSession = handleBackToLobby;
+    // ==========================================================================
+    // ORGANIZER PIN UNLOCK
+    // ==========================================================================
+    const handleOrganizerControlsClick = () => {
+        if (adminToken) {
+            setShowOrganizerDrawer((prev) => !prev);
+        } else {
+            setOrganizerPinBuffer('');
+            setOrganizerPinError('');
+            setIsOrganizerPinModalOpen(true);
+        }
+    };
+
+    const handleOrganizerPinSubmit = async (submittedPin = organizerPinBuffer) => {
+        if (submittedPin.length !== 4 || verifyingOrganizerPin) return;
+        setVerifyingOrganizerPin(true);
+        setOrganizerPinError('');
+
+        try {
+            const result = await verifyOrganizerPin({ slug, pin: submittedPin });
+            if (result.error) {
+                setOrganizerPinError(result.error);
+                setOrganizerPinBuffer('');
+            } else {
+                setAdminToken(result.adminToken);
+                if (typeof window !== 'undefined') {
+                    localStorage.setItem(`ss_admin_${slug}`, result.adminToken);
+                }
+                setIsOrganizerPinModalOpen(false);
+                setShowOrganizerDrawer(true);
+            }
+        } catch {
+            setOrganizerPinError('Something went wrong.');
+            setOrganizerPinBuffer('');
+        }
+        setVerifyingOrganizerPin(false);
+    };
 
     const handleResetPin = async (participantId, personName) => {
         const isCurrentActive =
@@ -659,10 +702,9 @@ function RoomContent() {
                                     </div>
                                 </div>
 
-                                {adminToken && (
                                     <button
                                         type="button"
-                                        onClick={() => setShowOrganizerDrawer((prev) => !prev)}
+                                        onClick={handleOrganizerControlsClick}
                                         className="text-xs font-semibold text-[#8C6D46] hover:text-[#1C1917] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#D4A373]/15 transition cursor-pointer"
                                     >
                                         <KeyRound className="w-3.5 h-3.5" />
@@ -673,10 +715,9 @@ function RoomContent() {
                                             <ChevronDown className="w-3.5 h-3.5" />
                                         )}
                                     </button>
-                                )}
                             </div>
 
-                            {adminToken && showOrganizerDrawer && (
+                            {showOrganizerDrawer && (
                                 <div className="mt-4 p-5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] space-y-4">
                                     {/* Quick Add Person */}
                                     <div>
@@ -917,14 +958,7 @@ function RoomContent() {
                                 <span>{t('dashboard.backToLobby')}</span>
                             </button>
 
-                            <button
-                                type="button"
-                                onClick={handleBackToLobby}
-                                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white border border-[#E7E5E0] hover:bg-[#FDF2F0] hover:text-[#C84B31] text-xs font-semibold text-[#57534E] transition cursor-pointer"
-                            >
-                                <Lock className="w-3.5 h-3.5" />
-                                <span>{t('dashboard.lockSwitch')}</span>
-                            </button>
+
                         </div>
 
                         {/* Signed-in Banner */}
@@ -1548,6 +1582,78 @@ function RoomContent() {
                                     )}
                                 </button>
                             </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* ================================================================
+                ORGANIZER PIN MODAL
+            ================================================================ */}
+            {isOrganizerPinModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 space-y-5">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <span className="w-10 h-10 rounded-2xl bg-[#D4A373]/20 text-[#8C6D46] flex items-center justify-center">
+                                    <KeyRound className="w-5 h-5" />
+                                </span>
+                                <h3 className="text-xl font-bold text-[#1C1917]">
+                                    {t('room.organizerPinTitle')}
+                                </h3>
+                            </div>
+                            <button
+                                type="button"
+                                disabled={verifyingOrganizerPin}
+                                onClick={() => setIsOrganizerPinModalOpen(false)}
+                                className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        <p className="text-sm text-[#57534E]">
+                            {t('room.organizerPinDesc')}
+                        </p>
+
+                        <form
+                            onSubmit={(e) => {
+                                e.preventDefault();
+                                handleOrganizerPinSubmit();
+                            }}
+                            className="space-y-4"
+                        >
+                            <PinInput
+                                value={organizerPinBuffer}
+                                onChange={setOrganizerPinBuffer}
+                                onComplete={(p) => handleOrganizerPinSubmit(p)}
+                                disabled={verifyingOrganizerPin}
+                                autoFocus
+                            />
+
+                            {organizerPinError && (
+                                <p className="text-center text-xs font-semibold text-[#C84B31]">
+                                    {organizerPinError}
+                                </p>
+                            )}
+
+                            <button
+                                type="submit"
+                                disabled={organizerPinBuffer.length !== 4 || verifyingOrganizerPin}
+                                className="w-full py-3 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
+                            >
+                                {verifyingOrganizerPin ? (
+                                    <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        <span>{t('room.verifyingPin')}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Unlock className="w-4 h-4" />
+                                        <span>{t('room.unlockOrganizerBtn')}</span>
+                                    </>
+                                )}
+                            </button>
                         </form>
                     </div>
                 </div>
