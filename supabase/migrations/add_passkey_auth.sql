@@ -31,3 +31,11 @@ create table if not exists public.webauthn_challenges (
 
 create index if not exists webauthn_challenges_expires_idx
   on public.webauthn_challenges (expires_at);
+
+-- The app accesses these tables exclusively through the service-role key.
+-- New tables do not always inherit grants in this project, so grant
+-- explicitly (and set defaults so future migrations work the same way).
+grant all on table public.participant_credentials to service_role;
+grant all on table public.webauthn_challenges to service_role;
+alter default privileges in schema public grant all on tables to service_role;
+alter default privileges in schema public grant all on sequences to service_role;

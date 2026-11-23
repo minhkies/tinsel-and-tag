@@ -654,11 +654,13 @@ function RoomContent() {
         triggerSavedBadge();
     };
 
-    // Drag-and-drop sensors: mouse drags after 8px of movement, touch drags
-    // after a short hold (so page scrolling still works), plus keyboard support.
+    // Drag-and-drop sensors. The drag handle uses touch-action: none, so the
+    // PointerSensor covers both mouse and touch with a tiny movement threshold.
+    // TouchSensor is a fallback for browsers without pointer events; the
+    // KeyboardSensor keeps reordering accessible.
     const sensors = useSensors(
-        useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-        useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+        useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
         useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
     );
 
@@ -973,18 +975,18 @@ function RoomContent() {
                                                 <ChevronDown className="w-3 h-3 -rotate-90" />
                                             </button>
                                         </div>
-                                        <form onSubmit={handleQuickAdd} className="flex gap-2">
+                                        <form onSubmit={handleQuickAdd} className="flex flex-col sm:flex-row gap-2">
                                             <input
                                                 type="text"
                                                 value={quickAddName}
                                                 onChange={(e) => setQuickAddName(e.target.value)}
                                                 placeholder={t('room.newParticipantPlaceholder')}
-                                                className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
+                                                className="w-full sm:flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm outline-none focus:border-[#1B4332]"
                                             />
                                             <button
                                                 type="submit"
                                                 disabled={!quickAddName.trim() || isQuickAdding}
-                                                className="px-4 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shrink-0"
+                                                className="w-full sm:w-auto justify-center px-4 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer shrink-0"
                                             >
                                                 {isQuickAdding ? (
                                                     <Loader2 className="w-3.5 h-3.5 animate-spin" />

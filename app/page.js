@@ -241,7 +241,7 @@ export default function OnboardingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-white text-[#1C1917] pb-16">
+    <div className={`min-h-dvh bg-white text-[#1C1917] flex flex-col ${step === 1 ? 'pb-0 sm:pb-16' : 'pb-16'}`}>
       {/* Header */}
       <header className="max-w-2xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between gap-3">
         <div
@@ -298,13 +298,14 @@ export default function OnboardingPage() {
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 mt-2">
+      <main className={`max-w-2xl mx-auto px-4 mt-2 ${step === 1 ? 'flex-1 flex flex-col sm:block' : ''}`}>
         {/* ==============================================================
             STEP 1: WELCOME SCREEN
         ============================================================== */}
         {step === 1 && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-3xl p-6 sm:p-10 border border-[#E7E5E0] shadow-xs text-center space-y-6">
+          <div className="flex-1 flex flex-col">
+            <div className="flex-1 flex flex-col bg-white rounded-3xl p-6 sm:p-10 border border-[#E7E5E0] shadow-xs text-center">
+              <div className="space-y-6">
               {/* Festive Badge */}
               <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1B4332]/10 text-[#1B4332] text-xs font-semibold">
                 <Sparkles className="w-3.5 h-3.5 text-[#D4A373]" />
@@ -360,8 +361,10 @@ export default function OnboardingPage() {
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="space-y-3 pt-3">
+              </div>
+
+              {/* Action Buttons — pinned to the bottom of the screen on mobile */}
+              <div className="mt-6 pt-3 sm:mt-9 sm:pt-0 space-y-3 sticky bottom-0 bg-white border-t border-[#E7E5E0] shadow-[0_-2px_12px_rgba(28,25,23,0.06)] rounded-b-3xl -mx-6 px-6 -mb-6 pb-6 sm:static sm:bg-transparent sm:border-0 sm:shadow-none sm:rounded-none sm:mx-0 sm:px-0 sm:mb-0 sm:pb-0">
                 {/* Primary: Get Started */}
                 <button
                   type="button"
@@ -403,7 +406,7 @@ export default function OnboardingPage() {
                       </button>
                     </div>
 
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                       <input
                         type="text"
                         value={roomCodeInput}
@@ -413,11 +416,11 @@ export default function OnboardingPage() {
                         }}
                         autoFocus
                         placeholder={t('onboarding.joinRoomPlaceholder')}
-                        className="flex-1 px-4 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm text-[#1C1917] font-mono outline-none focus:border-[#1B4332]"
+                        className="w-full sm:flex-1 min-w-0 px-4 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-sm text-[#1C1917] font-mono outline-none focus:border-[#1B4332]"
                       />
                       <button
                         type="submit"
-                        className="px-5 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] text-[#FAF9F6] text-sm font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
+                        className="w-full sm:w-auto justify-center px-5 py-2.5 rounded-xl bg-[#1B4332] hover:bg-[#143326] text-[#FAF9F6] text-sm font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
                       >
                         <span>{t('onboarding.joinRoomBtn')}</span>
                         <ArrowRight className="w-3.5 h-3.5" />
@@ -570,7 +573,7 @@ export default function OnboardingPage() {
               </div>
 
               {/* Add Participant Input Form */}
-              <form onSubmit={handleAddParticipant} className="flex gap-2 mb-4">
+              <form onSubmit={handleAddParticipant} className="flex flex-col sm:flex-row gap-2 mb-4">
                 <input
                   type="text"
                   value={newParticipantName}
@@ -580,12 +583,12 @@ export default function OnboardingPage() {
                   }}
                   autoFocus
                   placeholder={t('onboarding.addPersonPlaceholder')}
-                  className="flex-1 px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] text-sm focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition"
+                  className="w-full sm:flex-1 min-w-0 px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] text-sm focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition"
                 />
                 <button
                   type="submit"
                   disabled={!newParticipantName.trim()}
-                  className="px-5 py-3 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] font-semibold flex items-center gap-1.5 transition cursor-pointer text-sm shrink-0"
+                  className="w-full sm:w-auto justify-center px-5 py-3 rounded-xl bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] font-semibold flex items-center gap-1.5 transition cursor-pointer text-sm shrink-0"
                 >
                   <Plus className="w-4 h-4" />
                   <span>{t('onboarding.addBtn')}</span>

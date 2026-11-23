@@ -16,9 +16,11 @@ function getDomainLabel(url) {
 }
 
 /**
- * A single wishlist item row that can be dragged to reorder.
- * The entire row is draggable (pointer + touch), while its buttons
- * and link keep working for taps/clicks.
+ * A single wishlist item row, reorderable by dragging its grip handle.
+ * The handle is the only drag activator: it uses `touch-action: none` so
+ * touch-dragging starts instantly on mobile without fighting the browser's
+ * scroll gesture, while swiping anywhere else on the row still scrolls the
+ * page normally.
  */
 export default function WishlistItemRow({ item, index, onEdit, onDelete }) {
     const { t } = useLanguage();
@@ -26,6 +28,7 @@ export default function WishlistItemRow({ item, index, onEdit, onDelete }) {
         attributes,
         listeners,
         setNodeRef,
+        setActivatorNodeRef,
         transform,
         transition,
         isDragging,
@@ -34,19 +37,14 @@ export default function WishlistItemRow({ item, index, onEdit, onDelete }) {
     const style = {
         transform: CSS.Transform.toString(transform),
         transition,
-        // Allow native page scrolling on touch; drag activates after the
-        // TouchSensor's hold delay instead of blocking scroll immediately.
-        touchAction: 'manipulation',
     };
 
     return (
         <div
             ref={setNodeRef}
             style={style}
-            {...attributes}
-            {...listeners}
-            className={`p-3.5 rounded-2xl bg-[#FAF9F6] border flex items-center justify-between gap-3 cursor-grab active:cursor-grabbing select-none transition-shadow ${isDragging
-                    ? 'border-[#1B4332] shadow-xl opacity-90 relative z-10 cursor-grabbing'
+            className={`p-3.5 rounded-2xl bg-[#FAF9F6] border flex items-center justify-between gap-3 transition-shadow ${isDragging
+                    ? 'border-[#1B4332] shadow-xl opacity-90 relative z-10'
                     : 'border-[#E7E5E0] shadow-2xs'
                 }`}
         >
@@ -99,10 +97,17 @@ export default function WishlistItemRow({ item, index, onEdit, onDelete }) {
                 >
                     <Trash2 className="w-4 h-4" />
                 </button>
-                <GripVertical
-                    className="w-4 h-4 text-[#A8A29E] mr-0.5"
-                    aria-hidden="true"
-                />
+                <button
+                    type="button"
+                    ref={setActivatorNodeRef}
+                    {...attributes}
+                    {...listeners}
+                    title={t('dashboard.dragToReorder')}
+                    aria-label={t('dashboard.dragToReorder')}
+                    className="touch-none cursor-grab active:cursor-grabbing p-2 rounded-xl text-[#A8A29E] hover:text-[#1C1917] hover:bg-white transition"
+                >
+                    <GripVertical className="w-5 h-5" />
+                </button>
             </div>
         </div>
     );
