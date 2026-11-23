@@ -842,7 +842,7 @@ function RoomContent() {
             )}
 
             {/* Header */}
-            <header className="max-w-3xl mx-auto px-4 pt-8 pb-4 flex items-center justify-between gap-3">
+            <header className="max-w-3xl mx-auto px-4 pt-8 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <Link href="/" className="flex items-center gap-2.5 group">
                     <Image
                         src="/logo.png"
@@ -862,7 +862,7 @@ function RoomContent() {
                     </div>
                 </Link>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between w-full sm:w-auto gap-2">
                     <span className="text-xs font-mono bg-white border border-[#E7E5E0] px-3 py-1.5 rounded-full text-[#57534E]">
                         /room/{room.slug}
                     </span>
