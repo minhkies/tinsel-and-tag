@@ -1472,9 +1472,8 @@ export async function getRoomExclusions({ slug }) {
 
 /**
  * Organizer-only: blocks two participants from drawing each other (mutual
- * exclusion). If the current draw violates the new rule, matches are redrawn
- * to respect it (changed envelopes are reset). Rejects the rule entirely if
- * no valid draw exists with it.
+ * exclusion). Before the draw the rule takes effect immediately; after the
+ * draw the rule is saved and takes effect on the next re-draw.
  */
 export async function addExclusionRule({ slug, participantIdA, participantIdB }) {
   try {
@@ -1493,14 +1492,11 @@ export async function addExclusionRule({ slug, participantIdA, participantIdB })
 
     if (!room) return { error: 'Room not found.' };
 
-    // Exclusion rules are only editable before the draw
-    if (await getRoomDrawnStatus(room.id)) {
-      return { error: 'Names have already been drawn. Exclusion rules are locked.' };
-    }
+    const isDrawn = await getRoomDrawnStatus(room.id);
 
     const { data: participants, error: partError } = await supabaseAdmin
       .from('participants')
-      .select('id, name, exclusions, assignee_id, has_revealed')
+      .select('id, name, exclusions')
       .eq('room_id', room.id);
 
     if (partError) throw partError;
@@ -1516,70 +1512,22 @@ export async function addExclusionRule({ slug, participantIdA, participantIdB })
       return { error: 'This pair is already blocked.' };
     }
 
-    // Tentative mutual exclusion
-    const withRule = participants.map((p) => {
-      if (p.id === a.id) return { ...p, exclusions: [...(p.exclusions || []), b.id] };
-      if (p.id === b.id) return { ...p, exclusions: [...(p.exclusions || []), a.id] };
-      return p;
-    });
-
-    // Does the current draw violate the new rule?
-    const violatesCurrentDraw = a.assignee_id === b.id || b.assignee_id === a.id;
-
-    if (violatesCurrentDraw) {
-      const newAssignments = generateSecretSantaMatches(
-        withRule.map((p) => ({ id: p.id, exclusions: p.exclusions }))
-      );
-
-      if (!newAssignments) {
-        return {
-          error:
-            'Blocking this pair makes a valid draw impossible. Remove another rule first.',
-        };
-      }
-
-      // Save the rule and the redrawn assignments (reset changed envelopes)
-      for (const p of withRule) {
-        const changed = newAssignments[p.id] !== p.assignee_id;
-        const needsExclusionUpdate = p.id === a.id || p.id === b.id;
-
-        if (changed || needsExclusionUpdate) {
-          await supabaseAdmin
-            .from('participants')
-            .update({
-              ...(changed
-                ? {
-                  assignee_id: newAssignments[p.id],
-                  ...(p.has_revealed ? { has_revealed: false } : {}),
-                }
-                : {}),
-              ...(needsExclusionUpdate ? { exclusions: p.exclusions } : {}),
-            })
-            .eq('id', p.id);
-        }
-      }
-
-      return {
-        success: true,
-        redrew: true,
-        notice: `${a.name} and ${b.name} can no longer draw each other. Matches were redrawn to respect the new rule.`,
-      };
-    }
-
-    // No draw change needed — just save the mutual exclusion
+    // Save the mutual exclusion
     await supabaseAdmin
       .from('participants')
-      .update({ exclusions: withRule.find((p) => p.id === a.id).exclusions })
+      .update({ exclusions: [...(a.exclusions || []), b.id] })
       .eq('id', a.id);
     await supabaseAdmin
       .from('participants')
-      .update({ exclusions: withRule.find((p) => p.id === b.id).exclusions })
+      .update({ exclusions: [...(b.exclusions || []), a.id] })
       .eq('id', b.id);
 
     return {
       success: true,
-      redrew: false,
-      notice: `${a.name} and ${b.name} can no longer draw each other.`,
+      needsRedraw: isDrawn,
+      notice: isDrawn
+        ? `${a.name} and ${b.name} are blocked. Re-draw names to apply the new rule.`
+        : `${a.name} and ${b.name} can no longer draw each other.`,
     };
   } catch (err) {
     console.error('addExclusionRule error:', err);
@@ -1605,14 +1553,11 @@ export async function removeExclusionRule({ slug, participantIdA, participantIdB
 
     if (!room) return { error: 'Room not found.' };
 
-    // Exclusion rules are only editable before the draw
-    if (await getRoomDrawnStatus(room.id)) {
-      return { error: 'Names have already been drawn. Exclusion rules are locked.' };
-    }
+    const isDrawn = await getRoomDrawnStatus(room.id);
 
     const { data: participants, error } = await supabaseAdmin
       .from('participants')
-      .select('id, exclusions')
+      .select('id, name, exclusions')
       .eq('room_id', room.id);
 
     if (error) throw error;
@@ -1630,7 +1575,13 @@ export async function removeExclusionRule({ slug, participantIdA, participantIdB
       .update({ exclusions: (b.exclusions || []).filter((id) => id !== a.id) })
       .eq('id', b.id);
 
-    return { success: true };
+    return {
+      success: true,
+      needsRedraw: isDrawn,
+      notice: isDrawn
+        ? `${a.name} and ${b.name} can draw each other again. Re-draw names to apply.`
+        : `${a.name} and ${b.name} are no longer blocked.`,
+    };
   } catch (err) {
     console.error('removeExclusionRule error:', err);
     return { error: 'Failed to remove exclusion rule. Please try again.' };
@@ -1716,6 +1667,82 @@ export async function drawNames({ slug }) {
   } catch (err) {
     console.error('drawNames error:', err);
     return { error: 'Failed to draw names. Please try again.' };
+  }
+}
+
+/**
+ * Organizer-only: re-runs the Secret Santa draw for an already-drawn room
+ * using the room's current exclusion rules. Envelopes are reset for anyone
+ * whose assignment changes.
+ */
+export async function redrawNames({ slug }) {
+  try {
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
+    const { data: room, error: roomError } = await supabaseAdmin
+      .from('rooms')
+      .select('id')
+      .eq('slug', slug)
+      .single();
+
+    if (roomError || !room) return { error: 'Room not found.' };
+
+    if (!(await getRoomDrawnStatus(room.id))) {
+      return { error: 'Names haven’t been drawn yet. Use Draw Names instead.' };
+    }
+
+    const { data: participants, error: partError } = await supabaseAdmin
+      .from('participants')
+      .select('id, exclusions, assignee_id, has_revealed')
+      .eq('room_id', room.id);
+
+    if (partError) throw partError;
+
+    if (participants.length < 2) {
+      return { error: 'Add at least 2 participants before re-drawing.' };
+    }
+
+    let assignments;
+    if (participants.length === 2) {
+      const [p1, p2] = participants;
+      if (
+        (p1.exclusions || []).includes(p2.id) ||
+        (p2.exclusions || []).includes(p1.id)
+      ) {
+        return {
+          error:
+            'The 2 participants are blocked from drawing each other. Remove the exclusion or add a participant.',
+        };
+      }
+      assignments = {
+        [p1.id]: p2.id,
+        [p2.id]: p1.id,
+      };
+    } else {
+      assignments = generateSecretSantaMatches(participants);
+      if (!assignments) {
+        return {
+          error:
+            'No valid draw exists with these exclusion rules. Remove an exclusion or add a participant.',
+        };
+      }
+    }
+
+    // Apply new assignments; reset envelopes only for changed matches
+    for (const p of participants) {
+      if (assignments[p.id] !== p.assignee_id) {
+        await supabaseAdmin
+          .from('participants')
+          .update({ assignee_id: assignments[p.id], has_revealed: false })
+          .eq('id', p.id);
+      }
+    }
+
+    return { success: true, notice: 'Names have been re-drawn!' };
+  } catch (err) {
+    console.error('redrawNames error:', err);
+    return { error: 'Failed to re-draw names. Please try again.' };
   }
 }
 

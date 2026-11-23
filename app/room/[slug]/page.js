@@ -80,6 +80,7 @@ import {
     addExclusionRule,
     removeExclusionRule,
     drawNames,
+    redrawNames,
     claimOrganizer,
     unlinkOrganizerParticipant,
 } from '@/app/actions';
@@ -214,6 +215,9 @@ function RoomContent() {
     // Draw names (organizer drawer) state
     const [drawingNames, setDrawingNames] = useState(false);
     const [drawError, setDrawError] = useState('');
+    const [redrawingNames, setRedrawingNames] = useState(false);
+    const [redrawError, setRedrawError] = useState('');
+    const [confirmingRedraw, setConfirmingRedraw] = useState(false);
 
     // Organizer identity state
     const [organizerInfo, setOrganizerInfo] = useState(null); // { claimed, name, participantId } | null
@@ -963,7 +967,7 @@ function RoomContent() {
             showToast(res.error);
             return;
         }
-        showToast(t('room.exclusionRemovedToast'));
+        showToast(res.notice || t('room.exclusionRemovedToast'));
         await loadExclusions();
     };
 
@@ -983,6 +987,26 @@ function RoomContent() {
         }
 
         showToast(res.notice || t('room.drawNamesToast'));
+        await loadRoomData();
+    };
+
+    const handleRedrawNames = async () => {
+        if (redrawingNames) return;
+
+        setRedrawingNames(true);
+        setRedrawError('');
+
+        const res = await redrawNames({ slug });
+
+        setRedrawingNames(false);
+
+        if (res.error) {
+            setRedrawError(res.error);
+            return;
+        }
+
+        setConfirmingRedraw(false);
+        showToast(res.notice || t('room.redrawNamesToast'));
         await loadRoomData();
     };
 
@@ -1176,8 +1200,75 @@ function RoomContent() {
                                         )}
                                     </div>
 
-                                    {/* Draw Names (only while the room is undrawn) */}
-                                    {!room.isDrawn && (
+                                    {/* Draw Names (undrawn) / Re-draw Names (drawn) */}
+                                    {room.isDrawn ? (
+                                        <div className="p-4 rounded-2xl bg-[#C84B31]/5 border border-[#C84B31]/20 space-y-3">
+                                            <div className="flex items-center gap-2">
+                                                <Shuffle className="w-4 h-4 text-[#C84B31]" />
+                                                <span className="text-sm font-bold text-[#1C1917]">
+                                                    {t('room.redrawNamesTitle')}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-[#57534E]">
+                                                {t('room.redrawNamesDesc')}
+                                            </p>
+                                            {confirmingRedraw ? (
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setConfirmingRedraw(false);
+                                                            setRedrawError('');
+                                                        }}
+                                                        disabled={redrawingNames}
+                                                        className="flex-1 py-2.5 rounded-xl bg-white border border-[#E7E5E0] text-[#57534E] text-sm font-semibold transition cursor-pointer"
+                                                    >
+                                                        {t('common.cancel')}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleRedrawNames}
+                                                        disabled={participants.length < 2 || redrawingNames}
+                                                        className="flex-1 py-2.5 rounded-xl bg-[#C84B31] hover:bg-[#9E3B24] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:cursor-not-allowed"
+                                                    >
+                                                        {redrawingNames ? (
+                                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                                        ) : (
+                                                            <Shuffle className="w-4 h-4" />
+                                                        )}
+                                                        <span>
+                                                            {redrawingNames
+                                                                ? t('room.redrawingNames')
+                                                                : t('room.confirmRedrawBtn')}
+                                                        </span>
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setConfirmingRedraw(true);
+                                                        setRedrawError('');
+                                                    }}
+                                                    disabled={participants.length < 2 || redrawingNames}
+                                                    className="w-full py-2.5 rounded-xl bg-[#C84B31] hover:bg-[#9E3B24] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:cursor-not-allowed"
+                                                >
+                                                    <Shuffle className="w-4 h-4" />
+                                                    <span>{t('room.redrawNamesBtn')}</span>
+                                                </button>
+                                            )}
+                                            {participants.length < 2 && (
+                                                <p className="text-[11px] text-[#A8A29E]">
+                                                    {t('room.drawNamesMinPeople')}
+                                                </p>
+                                            )}
+                                            {redrawError && (
+                                                <p className="text-xs font-semibold text-[#C84B31]">
+                                                    {redrawError}
+                                                </p>
+                                            )}
+                                        </div>
+                                    ) : (
                                         <div className="p-4 rounded-2xl bg-[#1B4332]/5 border border-[#1B4332]/20 space-y-3">
                                             <div className="flex items-center gap-2">
                                                 <Shuffle className="w-4 h-4 text-[#1B4332]" />
@@ -1332,8 +1423,8 @@ function RoomContent() {
 
                                         {room.isDrawn && (
                                             <p className="text-[11px] text-[#A8A29E] mb-3 flex items-center gap-1">
-                                                <Lock className="w-3 h-3" />
-                                                <span>{t('room.exclusionsLocked')}</span>
+                                                <Shuffle className="w-3 h-3" />
+                                                <span>{t('room.exclusionsApplyOnRedraw')}</span>
                                             </p>
                                         )}
 
@@ -1347,17 +1438,15 @@ function RoomContent() {
                                                         <span>
                                                             {pair.nameA} ↔ {pair.nameB}
                                                         </span>
-                                                        {!room.isDrawn && (
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleRemoveExclusion(pair.idA, pair.idB)}
-                                                                title={t('room.removeExclusionBtn')}
-                                                                aria-label={t('room.removeExclusionBtn')}
-                                                                className="hover:text-[#1C1917] cursor-pointer"
-                                                            >
-                                                                <X className="w-3.5 h-3.5" />
-                                                            </button>
-                                                        )}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleRemoveExclusion(pair.idA, pair.idB)}
+                                                            title={t('room.removeExclusionBtn')}
+                                                            aria-label={t('room.removeExclusionBtn')}
+                                                            className="hover:text-[#1C1917] cursor-pointer"
+                                                        >
+                                                            <X className="w-3.5 h-3.5" />
+                                                        </button>
                                                     </span>
                                                 ))}
                                             </div>
@@ -1367,9 +1456,8 @@ function RoomContent() {
                                             </p>
                                         )}
 
-                                        {!room.isDrawn && (
-                                            <div className="flex flex-col gap-2">
-                                                <div className="flex items-center gap-2">
+                                        <div className="flex flex-col gap-2">
+                                            <div className="flex items-center gap-2">
                                                     <select
                                                         value={exclusionA}
                                                         onChange={(e) => {
@@ -1417,7 +1505,6 @@ function RoomContent() {
                                                         : t('onboarding.blockPairBtn')}
                                                 </button>
                                             </div>
-                                        )}
 
                                         {exclusionError && (
                                             <p className="text-xs font-semibold text-[#C84B31] mt-2">
