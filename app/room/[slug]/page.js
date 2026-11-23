@@ -80,6 +80,8 @@ import {
     addExclusionRule,
     removeExclusionRule,
     drawNames,
+    claimOrganizer,
+    unlinkOrganizerParticipant,
 } from '@/app/actions';
 
 const AVATAR_PALETTES = [
@@ -213,6 +215,15 @@ function RoomContent() {
     const [drawingNames, setDrawingNames] = useState(false);
     const [drawError, setDrawError] = useState('');
 
+    // Organizer identity state
+    const [organizerInfo, setOrganizerInfo] = useState(null); // { claimed, name, participantId } | null
+    const [activeOrganizer, setActiveOrganizer] = useState(false);
+    const [organizerClaimMode, setOrganizerClaimMode] = useState(false);
+    const [organizerNameInput, setOrganizerNameInput] = useState('');
+    const [organizerClaimPinBuffer, setOrganizerClaimPinBuffer] = useState('');
+    const [organizerLinkParticipantId, setOrganizerLinkParticipantId] = useState('');
+    const [claimingOrganizer, setClaimingOrganizer] = useState(false);
+
     // Detect WebAuthn support once on mount. Hides all biometric UI in
     // unsupported browsers (e.g., Instagram/Messenger in-app webviews).
     useEffect(() => {
@@ -248,6 +259,8 @@ function RoomContent() {
 
         setRoom(lobbyRes.room);
         setParticipants(lobbyRes.participants);
+        setOrganizerInfo(lobbyRes.organizer || null);
+        setActiveOrganizer(Boolean(lobbyRes.activeOrganizer));
 
         const currentView = viewRef.current;
         const currentDash = dashboardRef.current;
@@ -357,7 +370,6 @@ function RoomContent() {
             slug,
             name: trimmed,
             exclusionParticipantId: addExclusionInput || null,
-            adminToken: adminToken || null,
         });
 
         setIsAdding(false);
@@ -383,7 +395,6 @@ function RoomContent() {
         const res = await addParticipantToRoom({
             slug,
             name: trimmed,
-            adminToken: adminToken || null,
         });
         setIsQuickAdding(false);
 
@@ -754,16 +765,17 @@ function RoomContent() {
     };
 
     // ==========================================================================
-    // ORGANIZER PIN UNLOCK
+    // ORGANIZER UNLOCK / CLAIM
     // ==========================================================================
     const handleOrganizerControlsClick = () => {
-        if (adminToken) {
+        if (activeOrganizer) {
             const willOpen = !showOrganizerDrawer;
             setShowOrganizerDrawer(!showOrganizerDrawer);
             if (willOpen) loadExclusions();
         } else {
             setOrganizerPinBuffer('');
             setOrganizerPinError('');
+            setOrganizerClaimMode(!organizerInfo?.claimed);
             setIsOrganizerPinModalOpen(true);
         }
     };
@@ -776,13 +788,16 @@ function RoomContent() {
         try {
             const result = await verifyOrganizerPin({ slug, pin: submittedPin });
             if (result.error) {
-                setOrganizerPinError(result.error);
-                setOrganizerPinBuffer('');
-            } else {
-                setAdminToken(result.adminToken);
-                if (typeof window !== 'undefined') {
-                    localStorage.setItem(`ss_admin_${slug}`, result.adminToken);
+                if (result.error === 'ORGANIZER_UNCLAIMED') {
+                    setOrganizerClaimMode(true);
+                    setOrganizerPinBuffer('');
+                } else {
+                    setOrganizerPinError(result.error);
+                    setOrganizerPinBuffer('');
                 }
+            } else {
+                setActiveOrganizer(true);
+                setOrganizerInfo({ claimed: true, ...result.organizer });
                 setIsOrganizerPinModalOpen(false);
                 setShowOrganizerDrawer(true);
                 loadExclusions();
@@ -794,13 +809,59 @@ function RoomContent() {
         setVerifyingOrganizerPin(false);
     };
 
+    const handleClaimOrganizer = async () => {
+        if (claimingOrganizer) return;
+
+        if (!organizerNameInput.trim()) {
+            setOrganizerPinError(t('organizerModal.nameRequired'));
+            return;
+        }
+        if (organizerClaimPinBuffer.length !== 4) {
+            setOrganizerPinError(t('organizerModal.pinRequired'));
+            return;
+        }
+
+        setClaimingOrganizer(true);
+        setOrganizerPinError('');
+
+        const res = await claimOrganizer({
+            slug,
+            name: organizerNameInput,
+            pin: organizerClaimPinBuffer,
+            participantId: organizerLinkParticipantId || null,
+            adminToken,
+        });
+
+        setClaimingOrganizer(false);
+
+        if (res.error) {
+            setOrganizerPinError(res.error);
+            return;
+        }
+
+        setActiveOrganizer(true);
+        setOrganizerInfo({ claimed: true, ...res.organizer });
+        setIsOrganizerPinModalOpen(false);
+        setShowOrganizerDrawer(true);
+        loadExclusions();
+    };
+
+    const handleUnlinkOrganizer = async () => {
+        const res = await unlinkOrganizerParticipant({ slug });
+        if (res.error) {
+            showToast(res.error);
+            return;
+        }
+        showToast(t('organizerModal.unlinkToast'));
+        await loadRoomData();
+    };
+
     const handleResetPin = async (participantId, personName) => {
         const isCurrentActive =
             activeParticipantId === participantId || dashboard?.me?.id === participantId;
 
         const res = await organizerResetPin({
             slug,
-            adminToken,
             participantId,
         });
         if (res.error) {
@@ -829,7 +890,6 @@ function RoomContent() {
 
         const res = await removeParticipant({
             slug,
-            adminToken,
             participantId: removeTarget.id,
             mode: removeMode,
         });
@@ -860,8 +920,7 @@ function RoomContent() {
     // EXCLUSION RULES (ORGANIZER)
     // ==========================================================================
     const loadExclusions = async () => {
-        if (!adminToken) return;
-        const res = await getRoomExclusions({ slug, adminToken });
+        const res = await getRoomExclusions({ slug });
         if (!res.error) {
             setExclusionPairs(res.pairs || []);
         }
@@ -875,7 +934,6 @@ function RoomContent() {
 
         const res = await addExclusionRule({
             slug,
-            adminToken,
             participantIdA: exclusionA,
             participantIdB: exclusionB,
         });
@@ -898,7 +956,6 @@ function RoomContent() {
     const handleRemoveExclusion = async (idA, idB) => {
         const res = await removeExclusionRule({
             slug,
-            adminToken,
             participantIdA: idA,
             participantIdB: idB,
         });
@@ -916,7 +973,7 @@ function RoomContent() {
         setDrawingNames(true);
         setDrawError('');
 
-        const res = await drawNames({ slug, adminToken });
+        const res = await drawNames({ slug });
 
         setDrawingNames(false);
 
@@ -1096,8 +1153,29 @@ function RoomContent() {
                                     </button>
                             </div>
 
-                            {showOrganizerDrawer && (
+                            {showOrganizerDrawer && activeOrganizer && (
                                 <div className="mt-4 p-5 rounded-2xl bg-[#FAF9F6] border border-[#E7E5E0] space-y-4">
+                                    {/* Organizer identity */}
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-xs font-semibold text-[#57534E] flex items-center gap-1.5 min-w-0">
+                                            <KeyRound className="w-3.5 h-3.5 text-[#8C6D46] shrink-0" />
+                                            <span className="truncate">
+                                                {t('organizerModal.drawerBadge', {
+                                                    name: organizerInfo?.name || '',
+                                                })}
+                                            </span>
+                                        </span>
+                                        {organizerInfo?.participantId && (
+                                            <button
+                                                type="button"
+                                                onClick={handleUnlinkOrganizer}
+                                                className="text-[11px] font-semibold text-[#C84B31] hover:underline cursor-pointer shrink-0"
+                                            >
+                                                {t('organizerModal.unlinkBtn')}
+                                            </button>
+                                        )}
+                                    </div>
+
                                     {/* Draw Names (only while the room is undrawn) */}
                                     {!room.isDrawn && (
                                         <div className="p-4 rounded-2xl bg-[#1B4332]/5 border border-[#1B4332]/20 space-y-3">
@@ -1219,26 +1297,27 @@ function RoomContent() {
                                                                 {t('room.resetPinBtn')}
                                                             </button>
                                                         )}
-                                                        {p.id !== activeParticipantId && (
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    setRemoveTarget(p);
-                                                                    setRemoveMode('rebridge');
-                                                                    setRemoveError('');
-                                                                }}
-                                                                disabled={participants.length <= 3}
-                                                                title={
-                                                                    participants.length <= 3
-                                                                        ? t('room.minParticipantsTooltip')
-                                                                        : t('room.removeParticipantBtn')
-                                                                }
-                                                                aria-label={t('room.removeParticipantBtn')}
-                                                                className="p-1.5 rounded-lg text-[#A8A29E] hover:text-[#C84B31] hover:bg-[#FDF2F0] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#A8A29E]"
-                                                            >
-                                                                <Trash2 className="w-4 h-4" />
-                                                            </button>
-                                                        )}
+                                                        {p.id !== activeParticipantId &&
+                                                            p.id !== organizerInfo?.participantId && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setRemoveTarget(p);
+                                                                        setRemoveMode('rebridge');
+                                                                        setRemoveError('');
+                                                                    }}
+                                                                    disabled={participants.length <= 3}
+                                                                    title={
+                                                                        participants.length <= 3
+                                                                            ? t('room.minParticipantsTooltip')
+                                                                            : t('room.removeParticipantBtn')
+                                                                    }
+                                                                    aria-label={t('room.removeParticipantBtn')}
+                                                                    className="p-1.5 rounded-lg text-[#A8A29E] hover:text-[#C84B31] hover:bg-[#FDF2F0] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#A8A29E]"
+                                                                >
+                                                                    <Trash2 className="w-4 h-4" />
+                                                                </button>
+                                                            )}
                                                     </div>
                                                 </div>
                                             ))}
@@ -1377,19 +1456,21 @@ function RoomContent() {
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setIsAddModalOpen(true);
-                                            setAddNameInput('');
-                                            setAddExclusionInput('');
-                                            setAddError('');
-                                        }}
-                                        className="text-xs font-semibold text-[#1B4332] hover:text-[#143326] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1B4332]/10 hover:bg-[#1B4332]/15 transition cursor-pointer"
-                                    >
-                                        <Plus className="w-3.5 h-3.5" />
-                                        <span>{t('room.addPersonBtn')}</span>
-                                    </button>
+                                    {activeOrganizer && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setIsAddModalOpen(true);
+                                                setAddNameInput('');
+                                                setAddExclusionInput('');
+                                                setAddError('');
+                                            }}
+                                            className="text-xs font-semibold text-[#1B4332] hover:text-[#143326] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1B4332]/10 hover:bg-[#1B4332]/15 transition cursor-pointer"
+                                        >
+                                            <Plus className="w-3.5 h-3.5" />
+                                            <span>{t('room.addPersonBtn')}</span>
+                                        </button>
+                                    )}
                                 </div>
                             </div>
 
@@ -1455,34 +1536,36 @@ function RoomContent() {
                                     );
                                 })}
 
-                                {/* Add Person Card */}
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setIsAddModalOpen(true);
-                                        setAddNameInput('');
-                                        setAddExclusionInput('');
-                                        setAddError('');
-                                    }}
-                                    className="p-4 rounded-2xl border-2 border-dashed border-[#E7E5E0] hover:border-[#1B4332] bg-[#FAF9F6]/50 hover:bg-white text-left transition flex items-center justify-between group cursor-pointer"
-                                >
-                                    <div className="flex items-center gap-3.5">
-                                        <div className="w-11 h-11 rounded-2xl bg-[#E7E5E0]/60 group-hover:bg-[#1B4332]/10 text-[#78716C] group-hover:text-[#1B4332] flex items-center justify-center font-bold text-sm transition">
-                                            <Plus className="w-5 h-5" />
-                                        </div>
-                                        <div>
-                                            <div className="font-bold text-base text-[#1C1917] group-hover:text-[#1B4332] transition">
-                                                {t('room.addSomeoneElse')}
+                                {/* Add Person Card — organizer only */}
+                                {activeOrganizer && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsAddModalOpen(true);
+                                            setAddNameInput('');
+                                            setAddExclusionInput('');
+                                            setAddError('');
+                                        }}
+                                        className="p-4 rounded-2xl border-2 border-dashed border-[#E7E5E0] hover:border-[#1B4332] bg-[#FAF9F6]/50 hover:bg-white text-left transition flex items-center justify-between group cursor-pointer"
+                                    >
+                                        <div className="flex items-center gap-3.5">
+                                            <div className="w-11 h-11 rounded-2xl bg-[#E7E5E0]/60 group-hover:bg-[#1B4332]/10 text-[#78716C] group-hover:text-[#1B4332] flex items-center justify-center font-bold text-sm transition">
+                                                <Plus className="w-5 h-5" />
                                             </div>
-                                            <div className="text-xs text-[#78716C] mt-0.5">
-                                                {t('room.someoneMissed')}
+                                            <div>
+                                                <div className="font-bold text-base text-[#1C1917] group-hover:text-[#1B4332] transition">
+                                                    {t('room.addSomeoneElse')}
+                                                </div>
+                                                <div className="text-xs text-[#78716C] mt-0.5">
+                                                    {t('room.someoneMissed')}
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                    <div className="w-8 h-8 rounded-full bg-[#FAF9F6] group-hover:bg-[#1B4332]/10 text-[#78716C] group-hover:text-[#1B4332] flex items-center justify-center transition">
-                                        <Plus className="w-4 h-4" />
-                                    </div>
-                                </button>
+                                        <div className="w-8 h-8 rounded-full bg-[#FAF9F6] group-hover:bg-[#1B4332]/10 text-[#78716C] group-hover:text-[#1B4332] flex items-center justify-center transition">
+                                            <Plus className="w-4 h-4" />
+                                        </div>
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -2358,7 +2441,7 @@ function RoomContent() {
             )}
 
             {/* ================================================================
-                ORGANIZER PIN MODAL
+                ORGANIZER PIN / CLAIM MODAL
             ================================================================ */}
             {isOrganizerPinModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
@@ -2369,12 +2452,14 @@ function RoomContent() {
                                     <KeyRound className="w-5 h-5" />
                                 </span>
                                 <h3 className="text-xl font-bold text-[#1C1917]">
-                                    {t('room.organizerPinTitle')}
+                                    {organizerClaimMode
+                                        ? t('organizerModal.setupTitle')
+                                        : t('room.organizerPinTitle')}
                                 </h3>
                             </div>
                             <button
                                 type="button"
-                                disabled={verifyingOrganizerPin}
+                                disabled={verifyingOrganizerPin || claimingOrganizer}
                                 onClick={() => setIsOrganizerPinModalOpen(false)}
                                 className="p-2 rounded-xl text-[#78716C] hover:bg-[#FAF9F6] cursor-pointer"
                             >
@@ -2382,49 +2467,158 @@ function RoomContent() {
                             </button>
                         </div>
 
-                        <p className="text-sm text-[#57534E]">
-                            {t('room.organizerPinDesc')}
-                        </p>
+                        {organizerClaimMode ? (
+                            adminToken ? (
+                                <form
+                                    onSubmit={(e) => {
+                                        e.preventDefault();
+                                        handleClaimOrganizer();
+                                    }}
+                                    className="space-y-4"
+                                >
+                                    <p className="text-sm text-[#57534E]">
+                                        {t('organizerModal.setupDesc')}
+                                    </p>
 
-                        <form
-                            onSubmit={(e) => {
-                                e.preventDefault();
-                                handleOrganizerPinSubmit();
-                            }}
-                            className="space-y-4"
-                        >
-                            <PinInput
-                                value={organizerPinBuffer}
-                                onChange={setOrganizerPinBuffer}
-                                onComplete={(p) => handleOrganizerPinSubmit(p)}
-                                disabled={verifyingOrganizerPin}
-                                autoFocus
-                            />
+                                    <div>
+                                        <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
+                                            {t('organizerModal.nameLabel')}
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={organizerNameInput}
+                                            onChange={(e) => {
+                                                setOrganizerNameInput(e.target.value);
+                                                if (organizerPinError) setOrganizerPinError('');
+                                            }}
+                                            autoFocus
+                                            placeholder={t('organizerModal.namePlaceholder')}
+                                            className="w-full px-4 py-3 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-[#1C1917] font-medium focus:bg-white focus:border-[#1B4332] focus:ring-4 focus:ring-[#1B4332]/10 outline-none transition text-sm"
+                                        />
+                                    </div>
 
-                            {organizerPinError && (
-                                <p className="text-center text-xs font-semibold text-[#C84B31]">
-                                    {organizerPinError}
+                                    <div>
+                                        <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-2.5">
+                                            {t('organizerModal.pinLabel')}
+                                        </label>
+                                        <PinInput
+                                            value={organizerClaimPinBuffer}
+                                            onChange={(val) => {
+                                                setOrganizerClaimPinBuffer(val);
+                                                if (organizerPinError) setOrganizerPinError('');
+                                            }}
+                                            hasError={Boolean(organizerPinError)}
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold uppercase tracking-wider text-[#57534E] mb-1.5">
+                                            {t('organizerModal.participantLinkLabel')}
+                                        </label>
+                                        <select
+                                            value={organizerLinkParticipantId}
+                                            onChange={(e) => setOrganizerLinkParticipantId(e.target.value)}
+                                            className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-[#E7E5E0] text-sm text-[#1C1917] outline-none focus:border-[#1B4332] cursor-pointer"
+                                        >
+                                            <option value="">
+                                                {t('organizerModal.notParticipatingOpt')}
+                                            </option>
+                                            {participants.map((p) => (
+                                                <option key={p.id} value={p.id}>
+                                                    {p.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    {organizerPinError && (
+                                        <p className="text-center text-xs font-semibold text-[#C84B31]">
+                                            {organizerPinError}
+                                        </p>
+                                    )}
+
+                                    <button
+                                        type="submit"
+                                        disabled={claimingOrganizer}
+                                        className="w-full py-3 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
+                                    >
+                                        {claimingOrganizer ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                <span>{t('organizerModal.settingUp')}</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Unlock className="w-4 h-4" />
+                                                <span>{t('organizerModal.saveUnlockBtn')}</span>
+                                            </>
+                                        )}
+                                    </button>
+                                </form>
+                            ) : (
+                                <p className="text-sm text-[#57534E]">
+                                    {t('organizerModal.needLinkNotice')}
                                 </p>
-                            )}
-
-                            <button
-                                type="submit"
-                                disabled={organizerPinBuffer.length !== 4 || verifyingOrganizerPin}
-                                className="w-full py-3 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
+                            )
+                        ) : (
+                            <form
+                                onSubmit={(e) => {
+                                    e.preventDefault();
+                                    handleOrganizerPinSubmit();
+                                }}
+                                className="space-y-4"
                             >
-                                {verifyingOrganizerPin ? (
-                                    <>
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                        <span>{t('room.verifyingPin')}</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Unlock className="w-4 h-4" />
-                                        <span>{t('room.unlockOrganizerBtn')}</span>
-                                    </>
+                                <p className="text-sm text-[#57534E]">
+                                    {t('room.organizerPinDesc')}
+                                </p>
+
+                                <PinInput
+                                    value={organizerPinBuffer}
+                                    onChange={setOrganizerPinBuffer}
+                                    onComplete={(p) => handleOrganizerPinSubmit(p)}
+                                    disabled={verifyingOrganizerPin}
+                                    autoFocus
+                                />
+
+                                {organizerPinError && (
+                                    <p className="text-center text-xs font-semibold text-[#C84B31]">
+                                        {organizerPinError}
+                                    </p>
                                 )}
-                            </button>
-                        </form>
+
+                                <button
+                                    type="submit"
+                                    disabled={organizerPinBuffer.length !== 4 || verifyingOrganizerPin}
+                                    className="w-full py-3 rounded-xl font-bold text-sm bg-[#1B4332] hover:bg-[#143326] disabled:bg-[#E7E5E0] disabled:text-[#A8A29E] text-[#FAF9F6] transition flex items-center justify-center gap-2 cursor-pointer"
+                                >
+                                    {verifyingOrganizerPin ? (
+                                        <>
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                            <span>{t('room.verifyingPin')}</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Unlock className="w-4 h-4" />
+                                            <span>{t('room.unlockOrganizerBtn')}</span>
+                                        </>
+                                    )}
+                                </button>
+
+                                {adminToken && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setOrganizerClaimMode(true);
+                                            setOrganizerPinBuffer('');
+                                            setOrganizerPinError('');
+                                        }}
+                                        className="w-full text-xs font-semibold text-[#8C6D46] hover:underline cursor-pointer"
+                                    >
+                                        {t('organizerModal.reclaimLink')}
+                                    </button>
+                                )}
+                            </form>
+                        )}
                     </div>
                 </div>
             )}

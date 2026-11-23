@@ -197,6 +197,52 @@ async function consumeWebAuthnChallenge(participantId, purpose) {
 }
 
 /**
+ * Sets a signed HttpOnly cookie marking an active organizer session for a room.
+ */
+async function setOrganizerSessionCookie(slug) {
+  const token = await new SignJWT({ slug, organizer: true })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('30d')
+    .sign(JWT_SECRET);
+
+  const cookieStore = await cookies();
+  cookieStore.set(`ss_org_${slug}`, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 30, // 30 days
+  });
+}
+
+/**
+ * Whether the current request holds a valid organizer session for the room.
+ */
+async function getOrganizerSession(slug) {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(`ss_org_${slug}`)?.value;
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify(token, JWT_SECRET);
+    return payload.slug === slug && payload.organizer === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guard for organizer-only server actions. Returns an error payload when the
+ * request has no valid organizer session for the room.
+ */
+async function requireOrganizerSession(slug) {
+  if (!(await getOrganizerSession(slug))) {
+    return { error: 'Organizer access required. Unlock organizer controls first.' };
+  }
+  return null;
+}
+
+/**
  * Whether a room's Secret Santa draw has happened. Defaults to true when the
  * column can't be read (e.g., migration not applied yet), which matches the
  * behavior of rooms that predate the deferred-draw feature.
@@ -372,6 +418,28 @@ export async function getRoomLobby(slug) {
 
     const isDrawn = await getRoomDrawnStatus(room.id);
 
+    // Organizer identity — guarded so the lobby still loads before the
+    // organizer-binding migration has been applied.
+    let organizer = null;
+    try {
+      const { data: orgInfo } = await supabaseAdmin
+        .from('rooms')
+        .select('organizer_name, organizer_pin_hash, organizer_participant_id')
+        .eq('id', room.id)
+        .single();
+      if (orgInfo && (orgInfo.organizer_name || orgInfo.organizer_pin_hash)) {
+        organizer = {
+          claimed: Boolean(orgInfo.organizer_pin_hash),
+          name: orgInfo.organizer_name || '',
+          participantId: orgInfo.organizer_participant_id || null,
+        };
+      }
+    } catch (err) {
+      console.error('rooms.organizer fetch error:', err);
+    }
+
+    const activeOrganizer = await getOrganizerSession(slug);
+
     const { data: participants, error: partError } = await supabaseAdmin
       .from('participants')
       .select('id, name, pin_hash, pin_hint, has_revealed')
@@ -422,6 +490,8 @@ export async function getRoomLobby(slug) {
         hasPasskey: passkeyOwners.has(p.id),
       })),
       activeParticipantId,
+      organizer,
+      activeOrganizer,
     };
   } catch (err) {
     console.error('getRoomLobby error:', err);
@@ -979,9 +1049,72 @@ export async function lockParticipantSession(slug) {
 }
 
 /**
- * Verifies a 4-digit PIN against all claimed participants in the room.
- * If any participant's PIN matches, returns the room's admin token so the
- * caller can access organizer tools.
+ * Claims (or re-claims) the organizer identity for a room. Requires the
+ * room's admin token (the organizer link), so only the creator / token
+ * holder can bind organizer privileges to a person. The organizer may
+ * optionally be linked to one of the room's participants.
+ */
+export async function claimOrganizer({ slug, name, pin, participantId = null, adminToken }) {
+  try {
+    const trimmedName = (name || '').trim();
+    if (!trimmedName) return { error: 'Please enter the organizer’s name.' };
+    if (!/^\d{4}$/.test(String(pin))) {
+      return { error: 'PIN must be exactly 4 digits.' };
+    }
+
+    const { data: room, error: roomError } = await supabaseAdmin
+      .from('rooms')
+      .select('id, admin_token')
+      .eq('slug', slug)
+      .single();
+
+    if (roomError || !room) return { error: 'Room not found.' };
+    if (!adminToken || room.admin_token !== adminToken) {
+      return {
+        error: 'Invalid organizer token. Use the organizer link to set up organizer access.',
+      };
+    }
+
+    // Validate the optional participant link
+    let linkedParticipantId = null;
+    if (participantId) {
+      const { data: p } = await supabaseAdmin
+        .from('participants')
+        .select('id')
+        .eq('id', participantId)
+        .eq('room_id', room.id)
+        .single();
+      if (!p) return { error: 'Selected participant not found in this room.' };
+      linkedParticipantId = p.id;
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from('rooms')
+      .update({
+        organizer_name: trimmedName,
+        organizer_pin_hash: hashPin(pin),
+        organizer_participant_id: linkedParticipantId,
+      })
+      .eq('id', room.id);
+
+    if (updateError) throw updateError;
+
+    await setOrganizerSessionCookie(slug);
+
+    return {
+      success: true,
+      organizer: { name: trimmedName, participantId: linkedParticipantId },
+    };
+  } catch (err) {
+    console.error('claimOrganizer error:', err);
+    return { error: 'Failed to set up organizer access. Please try again.' };
+  }
+}
+
+/**
+ * Verifies the ORGANIZER's 4-digit PIN (not any participant's PIN anymore —
+ * organizer privileges are bound to a person) and sets the organizer session
+ * cookie. Returns ORGANIZER_UNCLAIMED when the room has no organizer yet.
  */
 export async function verifyOrganizerPin({ slug, pin }) {
   try {
@@ -991,26 +1124,28 @@ export async function verifyOrganizerPin({ slug, pin }) {
 
     const { data: room } = await supabaseAdmin
       .from('rooms')
-      .select('id, admin_token')
+      .select('id, organizer_name, organizer_pin_hash, organizer_participant_id')
       .eq('slug', slug)
       .single();
 
     if (!room) return { error: 'Room not found.' };
 
-    // Fetch every claimed participant (those with a pin_hash)
-    const { data: claimed } = await supabaseAdmin
-      .from('participants')
-      .select('id, pin_hash')
-      .eq('room_id', room.id)
-      .not('pin_hash', 'is', null);
-
-    for (const p of claimed || []) {
-      if (verifyPin(pin, p.pin_hash)) {
-        return { success: true, adminToken: room.admin_token };
-      }
+    if (!room.organizer_pin_hash) {
+      return { error: 'ORGANIZER_UNCLAIMED' };
     }
 
-    return { error: 'Incorrect PIN.' };
+    if (!verifyPin(pin, room.organizer_pin_hash)) {
+      return { error: 'Incorrect PIN.' };
+    }
+
+    await setOrganizerSessionCookie(slug);
+    return {
+      success: true,
+      organizer: {
+        name: room.organizer_name || '',
+        participantId: room.organizer_participant_id || null,
+      },
+    };
   } catch (err) {
     console.error('verifyOrganizerPin error:', err);
     return { error: 'Unable to verify PIN.' };
@@ -1018,18 +1153,56 @@ export async function verifyOrganizerPin({ slug, pin }) {
 }
 
 /**
+ * Organizer-only: unlinks the organizer from their participant spot (the spot
+ * is freed with its PIN reset so someone else can claim it).
+ */
+export async function unlinkOrganizerParticipant({ slug }) {
+  try {
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
+    const { data: room } = await supabaseAdmin
+      .from('rooms')
+      .select('id, organizer_participant_id')
+      .eq('slug', slug)
+      .single();
+
+    if (!room) return { error: 'Room not found.' };
+
+    if (room.organizer_participant_id) {
+      // Free the spot so someone else can claim it
+      await supabaseAdmin
+        .from('participants')
+        .update({ pin_hash: null, pin_hint: '' })
+        .eq('id', room.organizer_participant_id);
+    }
+
+    await supabaseAdmin
+      .from('rooms')
+      .update({ organizer_participant_id: null })
+      .eq('id', room.id);
+
+    return { success: true };
+  } catch (err) {
+    console.error('unlinkOrganizerParticipant error:', err);
+    return { error: 'Failed to unlink. Please try again.' };
+  }
+}
+
+/**
  * Organizer-only action: resets a participant's PIN without reshuffling matches
  */
-export async function organizerResetPin({ slug, adminToken, participantId }) {
+export async function organizerResetPin({ slug, participantId }) {
+  const orgError = await requireOrganizerSession(slug);
+  if (orgError) return orgError;
+
   const { data: room } = await supabaseAdmin
     .from('rooms')
-    .select('id, admin_token')
+    .select('id')
     .eq('slug', slug)
     .single();
 
-  if (!room || room.admin_token !== adminToken) {
-    return { error: 'Invalid organizer token.' };
-  }
+  if (!room) return { error: 'Room not found.' };
 
   const { error } = await supabaseAdmin
     .from('participants')
@@ -1072,25 +1245,26 @@ export async function organizerResetPin({ slug, adminToken, participantId }) {
  * items, passkey credentials, and WebAuthn challenges before deleting the
  * participant row, so no foreign-key constraint is violated.
  */
-export async function removeParticipant({ slug, adminToken, participantId, mode }) {
+export async function removeParticipant({ slug, participantId, mode }) {
   try {
     if (!['rebridge', 'redraw'].includes(mode)) {
       return { error: 'Invalid removal mode.' };
     }
 
-    // 1. Fetch room and verify organizer token
+    // 1. Require an active organizer session (privileges are person-bound)
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
+    // 2. Fetch room
     const { data: room, error: roomError } = await supabaseAdmin
       .from('rooms')
-      .select('id, slug, admin_token')
+      .select('id, slug')
       .eq('slug', slug)
       .single();
 
     if (roomError || !room) return { error: 'Room not found.' };
-    if (!adminToken || room.admin_token !== adminToken) {
-      return { error: 'Invalid organizer token.' };
-    }
 
-    // 2. Fetch participants
+    // 3. Fetch participants
     const { data: participants, error: partError } = await supabaseAdmin
       .from('participants')
       .select('id, name, exclusions, assignee_id, has_revealed')
@@ -1101,13 +1275,30 @@ export async function removeParticipant({ slug, adminToken, participantId, mode 
     const target = participants.find((p) => p.id === participantId);
     if (!target) return { error: 'Participant not found.' };
 
-    // 3. Prevent self-removal (the organizer's own unlocked session)
+    // 4. The organizer's own linked spot cannot be removed (unlink first)
+    try {
+      const { data: orgInfo } = await supabaseAdmin
+        .from('rooms')
+        .select('organizer_participant_id')
+        .eq('id', room.id)
+        .single();
+      if (orgInfo?.organizer_participant_id === participantId) {
+        return {
+          error:
+            'You cannot remove the organizer. Unlink the organizer from the exchange first.',
+        };
+      }
+    } catch (err) {
+      console.error('organizer_participant_id fetch error:', err);
+    }
+
+    // 5. Prevent self-removal (the organizer's own unlocked session)
     const sessionParticipantId = await getAuthenticatedParticipantId(slug, false);
     if (sessionParticipantId === participantId) {
       return { error: 'You cannot remove yourself.' };
     }
 
-    // 4. Minimum participant guard (at least 3 must remain)
+    // 6. Minimum participant guard (at least 3 must remain)
     if (participants.length <= 3) {
       return { error: 'At least 3 participants must remain in the room.' };
     }
@@ -1237,17 +1428,18 @@ export async function removeParticipant({ slug, adminToken, participantId, mode 
 /**
  * Organizer-only: returns the room's current exclusion pairs.
  */
-export async function getRoomExclusions({ slug, adminToken }) {
+export async function getRoomExclusions({ slug }) {
   try {
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
     const { data: room } = await supabaseAdmin
       .from('rooms')
-      .select('id, admin_token')
+      .select('id')
       .eq('slug', slug)
       .single();
 
-    if (!room || room.admin_token !== adminToken) {
-      return { error: 'Invalid organizer token.' };
-    }
+    if (!room) return { error: 'Room not found.' };
 
     const { data: participants, error } = await supabaseAdmin
       .from('participants')
@@ -1284,21 +1476,22 @@ export async function getRoomExclusions({ slug, adminToken }) {
  * to respect it (changed envelopes are reset). Rejects the rule entirely if
  * no valid draw exists with it.
  */
-export async function addExclusionRule({ slug, adminToken, participantIdA, participantIdB }) {
+export async function addExclusionRule({ slug, participantIdA, participantIdB }) {
   try {
     if (!participantIdA || !participantIdB || participantIdA === participantIdB) {
       return { error: 'Select two different participants.' };
     }
 
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
     const { data: room } = await supabaseAdmin
       .from('rooms')
-      .select('id, admin_token')
+      .select('id')
       .eq('slug', slug)
       .single();
 
-    if (!room || room.admin_token !== adminToken) {
-      return { error: 'Invalid organizer token.' };
-    }
+    if (!room) return { error: 'Room not found.' };
 
     // Exclusion rules are only editable before the draw
     if (await getRoomDrawnStatus(room.id)) {
@@ -1399,17 +1592,18 @@ export async function addExclusionRule({ slug, adminToken, participantIdA, parti
  * Removing a rule only relaxes constraints, so the current draw always
  * remains valid and no redraw is needed.
  */
-export async function removeExclusionRule({ slug, adminToken, participantIdA, participantIdB }) {
+export async function removeExclusionRule({ slug, participantIdA, participantIdB }) {
   try {
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
     const { data: room } = await supabaseAdmin
       .from('rooms')
-      .select('id, admin_token')
+      .select('id')
       .eq('slug', slug)
       .single();
 
-    if (!room || room.admin_token !== adminToken) {
-      return { error: 'Invalid organizer token.' };
-    }
+    if (!room) return { error: 'Room not found.' };
 
     // Exclusion rules are only editable before the draw
     if (await getRoomDrawnStatus(room.id)) {
@@ -1448,19 +1642,20 @@ export async function removeExclusionRule({ slug, adminToken, participantIdA, pa
  * drawn yet. Requires at least 2 participants and a valid draw under the
  * room's exclusion rules. Sets is_drawn = true and resets all envelopes.
  */
-export async function drawNames({ slug, adminToken }) {
+export async function drawNames({ slug }) {
   try {
-    // 1. Fetch room and verify organizer token
+    // 1. Require an active organizer session (privileges are person-bound)
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
+    // 2. Fetch room
     const { data: room, error: roomError } = await supabaseAdmin
       .from('rooms')
-      .select('id, admin_token')
+      .select('id')
       .eq('slug', slug)
       .single();
 
     if (roomError || !room) return { error: 'Room not found.' };
-    if (!adminToken || room.admin_token !== adminToken) {
-      return { error: 'Invalid organizer token.' };
-    }
 
     // 2. Only draw once
     if (await getRoomDrawnStatus(room.id)) {
@@ -1540,7 +1735,6 @@ export async function addParticipantToRoom({
   slug,
   name,
   exclusionParticipantId = null,
-  adminToken = null,
 }) {
   try {
     const trimmedName = (name || '').trim();
@@ -1548,10 +1742,14 @@ export async function addParticipantToRoom({
       return { error: 'Please enter a name for the participant.' };
     }
 
+    // Adding participants is an organizer privilege — require an active session
+    const orgError = await requireOrganizerSession(slug);
+    if (orgError) return orgError;
+
     // 1. Fetch room
     const { data: room, error: roomError } = await supabaseAdmin
       .from('rooms')
-      .select('id, slug, admin_token')
+      .select('id, slug')
       .eq('slug', slug)
       .single();
 
